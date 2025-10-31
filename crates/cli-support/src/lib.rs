@@ -422,7 +422,8 @@ impl Bindgen {
             // segments.
             externref::force_contiguous_elements(&mut module)?;
         }
-        exception_handling::process(&mut module)?;
+        let wasm_name = format!("./{}_bg.js", self.stem()?);
+        exception_handling::process(&mut module, &wasm_name)?;
 
         // Using all of our metadata convert our module to a multi-value using
         // module if applicable.

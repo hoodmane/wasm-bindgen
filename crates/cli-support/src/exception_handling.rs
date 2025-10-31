@@ -94,13 +94,12 @@ impl Transform {
         }
     }
 
-    fn run(module: &mut Module) -> Result<()> {
+    fn run(module: &mut Module, import_name: &str) -> Result<()> {
         let ty = module
             .types
             .find(&[], &[ValType::Ref(RefType::Externref)])
-            .unwrap_or_else(|| module.types.add(&[], &[ValType::Ref(RefType::Externref)]));
-        // let (jstag, _) = module.add_import_tag("env", "JSTag", ty);
-        let jstag = module.tags.add(ty);
+            .unwrap_or_else(|| module.types.add(&[ValType::Ref(RefType::Externref)], &[]));
+        let (jstag, _) = module.add_import_tag(import_name, "JSTag", ty);
 
         let mut transform = Transform::new(jstag);
 
@@ -110,8 +109,8 @@ impl Transform {
     }
 }
 
-pub fn process(module: &mut Module) -> Result<()> {
-    Transform::run(module)?;
+pub fn process(module: &mut Module, import_name: &str) -> Result<()> {
+    Transform::run(module, import_name)?;
 
     Ok(())
 }
