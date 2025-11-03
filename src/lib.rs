@@ -1832,3 +1832,9 @@ impl<T: VectorIntoWasmAbi> From<Clamped<Vec<T>>> for JsValue {
         JsValue::from(Clamped(vector.0.into_boxed_slice()))
     }
 }
+
+
+#[unsafe(no_mangle)]
+pub fn ___wbg_js_panic() {
+    panic!("A JS error was raised!");
+}

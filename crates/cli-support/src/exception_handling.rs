@@ -9,13 +9,15 @@ struct Transform {
     // call the correct new import functions
     import_map: HashMap<FunctionId, TypeId>,
     jstag: TagId,
+    jspanic: FunctionId,
 }
 
 impl Transform {
-    fn new(jstag: TagId) -> Self {
+    fn new(jstag: TagId, jspanic: FunctionId) -> Self {
         Self {
             import_map: HashMap::new(),
             jstag,
+            jspanic,
         }
     }
     fn process_imports(&mut self, module: &mut Module) -> Result<()> {
@@ -58,6 +60,7 @@ impl Transform {
                 let try_block = try_block_builder.id();
                 drop(try_block_builder);
                 let mut catch_block_builder = instr_builder.dangling_instr_seq(None);
+                catch_block_builder.call(self.jspanic);
                 catch_block_builder.unreachable();
                 let catch_block = catch_block_builder.id();
                 for (_, loc1) in catch_block_builder.instrs_mut() {
@@ -100,8 +103,9 @@ impl Transform {
             .find(&[], &[ValType::Ref(RefType::Externref)])
             .unwrap_or_else(|| module.types.add(&[ValType::Ref(RefType::Externref)], &[]));
         let (jstag, _) = module.add_import_tag(import_name, "JSTag", ty);
+        let js_panic = module.funcs.by_name("___wbg_js_panic").unwrap();
 
-        let mut transform = Transform::new(jstag);
+        let mut transform = Transform::new(jstag, js_panic);
 
         transform.process_imports(module)?;
         transform.transform_calls(module)?;

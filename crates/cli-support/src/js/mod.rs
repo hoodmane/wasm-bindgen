@@ -707,6 +707,8 @@ wasm = wasmInstance.exports;
             self.export(export_name, None, ExportJs::Expression(&import_name), None)?;
         }
 
+        push_with_newline("export const JSTag = WebAssembly.JSTag;");
+
         push_with_newline(&self.imports_post);
 
         // Emit all our exports from this module
