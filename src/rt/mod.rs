@@ -626,6 +626,11 @@ pub fn take_last_exception() -> Result<(), super::JsValue> {
     ret
 }
 
+#[no_mangle]
+pub extern "C-unwind" fn ___wbg_js_panic(idx: u32) {
+    std::panic::panic_any(JsValue::_new(idx));
+}
+
 /// An internal helper trait for usage in `#[wasm_bindgen]` on `async`
 /// functions to convert the return value of the function to
 /// `Result<JsValue, JsValue>` which is what we'll return to JS (where an

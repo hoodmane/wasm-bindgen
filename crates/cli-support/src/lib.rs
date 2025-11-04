@@ -406,6 +406,8 @@ impl Bindgen {
         // GC pass before JS generation.
         if self.externref {
             externref::process(&mut module)?;
+            let wasm_name = format!("./{}_bg.js", self.stem()?);
+            exception_handling::process(&mut module, &wasm_name)?;
         } else {
             let ids = module
                 .exports
@@ -422,8 +424,6 @@ impl Bindgen {
             // segments.
             externref::force_contiguous_elements(&mut module)?;
         }
-        let wasm_name = format!("./{}_bg.js", self.stem()?);
-        exception_handling::process(&mut module, &wasm_name)?;
 
         // Using all of our metadata convert our module to a multi-value using
         // module if applicable.
@@ -471,7 +471,6 @@ impl Bindgen {
 
     fn module_from_bytes(&self, bytes: &[u8]) -> Result<Module, Error> {
         walrus::ModuleConfig::new()
-            .only_stable_features(false)
             // Skip validation of the module as LLVM's output is
             // generally already well-formed and so we won't gain much
             // from re-validating. Additionally LLVM's current output

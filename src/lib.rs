@@ -152,7 +152,7 @@ use __rt::wbg_cast;
 /// but for now it may be slightly slow.
 pub struct JsValue {
     idx: u32,
-    _marker: PhantomData<*mut u8>, // not at all threadsafe
+    // _marker: PhantomData<*mut u8>, // not at all threadsafe
 }
 
 impl JsValue {
@@ -172,7 +172,7 @@ impl JsValue {
     const fn _new(idx: u32) -> JsValue {
         JsValue {
             idx,
-            _marker: PhantomData,
+            // _marker: PhantomData,
         }
     }
 
@@ -1831,10 +1831,4 @@ impl<T: VectorIntoWasmAbi> From<Clamped<Vec<T>>> for JsValue {
     fn from(vector: Clamped<Vec<T>>) -> Self {
         JsValue::from(Clamped(vector.0.into_boxed_slice()))
     }
-}
-
-
-#[unsafe(no_mangle)]
-pub fn ___wbg_js_panic() {
-    panic!("A JS error was raised!");
 }
