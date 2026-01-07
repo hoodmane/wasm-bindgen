@@ -14,7 +14,9 @@ use core::mem::{self, ManuallyDrop};
 use crate::convert::*;
 use crate::describe::*;
 use crate::JsValue;
+use crate::__rt::MaybeUnwindSafe;
 use core::marker::PhantomData;
+use core::panic::AssertUnwindSafe;
 
 #[wasm_bindgen_macro::wasm_bindgen(wasm_bindgen = crate)]
 extern "C" {
@@ -280,13 +282,21 @@ where
     pub fn new<F>(t: F) -> Closure<T>
     where
         F: IntoWasmClosure<T> + 'static,
+        F: MaybeUnwindSafe,
     {
-        Closure::wrap(Box::new(t).unsize())
+        Self::_wrap(Box::new(t).unsize())
     }
 
     /// A more direct version of `Closure::new` which creates a `Closure` from
     /// a `Box<dyn Fn>`/`Box<dyn FnMut>`, which is how it's kept internally.
-    pub fn wrap(data: Box<T>) -> Closure<T> {
+    pub fn wrap(data: Box<T>) -> Closure<T>
+    where
+        T: MaybeUnwindSafe,
+    {
+        Self::_wrap(data)
+    }
+
+    fn _wrap(data: Box<T>) -> Closure<T> {
         Self {
             js: crate::__rt::wbg_cast(OwnedClosure(data)),
             _marker: PhantomData,
@@ -353,8 +363,16 @@ where
     pub fn once<F, A, R>(fn_once: F) -> Self
     where
         F: WasmClosureFnOnce<T, A, R>,
+        T: MaybeUnwindSafe
     {
-        Closure::wrap(fn_once.into_fn_mut())
+        Closure::once_assert_unwind_safe(fn_once)
+    }
+
+    pub fn once_assert_unwind_safe<F, A, R>(fn_once: F) -> Self
+    where
+        F: WasmClosureFnOnce<T, A, R>,
+    {
+        Closure::wrap(AssertUnwindSafe(fn_once.into_fn_mut()))
     }
 
     /// Convert a `FnOnce(A...) -> R` into a JavaScript `Function` object.
@@ -516,6 +534,10 @@ where
 #[doc(hidden)]
 pub unsafe trait WasmClosure: WasmDescribe {
     const IS_MUT: bool;
+}
+
+unsafe impl<T: WasmClosure> WasmClosure for AssertUnwindSafe<T> {
+    const IS_MUT: bool = T::IS_MUT;
 }
 
 /// An internal trait for the `Closure` type.

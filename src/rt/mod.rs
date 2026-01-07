@@ -760,6 +760,14 @@ pub const fn flat_byte_slices<const RESULT_LEN: usize, const SIZE: usize>(
     result
 }
 
+pub trait MaybeUnwindSafe {}
+
+#[cfg(all(feature = "std", panic = "unwind"))]
+impl<T: UnwindSafe + ?Sized> MaybeUnwindSafe for T {}
+
+#[cfg(not(all(feature = "std", panic = "unwind")))]
+impl<T: ?Sized> MaybeUnwindSafe for T {}
+
 // NOTE: This method is used to encode u32 into a variable-length-integer during the compile-time .
 // Generally speaking, the length of the encoded variable-length-integer depends on the size of the integer
 // but the maximum capacity can be used here to simplify the amount of code during the compile-time .
