@@ -788,3 +788,77 @@ fn closure_with_assert_unwind_safe() {
     many_arity_call1(&a);
     assert_eq!(rc.get(), 1);
 }
+
+#[wasm_bindgen(module = "tests/wasm/closures.js")]
+extern "C" {
+    fn closure_with_call(f: &Closure<dyn FnMut()>);
+    fn closure_with_cache(f: &Closure<dyn FnMut()>);
+    #[wasm_bindgen(catch)]
+    fn closure_with_call_cached() -> Result<(), JsValue>;
+}
+
+/// Test that Closure::with works correctly during the callback body
+#[wasm_bindgen_test]
+fn closure_with_works_during_body() {
+    let called = Cell::new(false);
+    Closure::with(
+        &mut || {
+            called.set(true);
+        },
+        |closure| {
+            closure_with_call(closure);
+        },
+    );
+    assert!(called.get());
+}
+
+/// Test that Closure::with allows capturing non-'static references
+#[wasm_bindgen_test]
+fn closure_with_captures_non_static() {
+    let mut value = 0u32;
+    Closure::with(
+        &mut || {
+            value += 1;
+        },
+        |closure| {
+            closure_with_call(closure);
+            closure_with_call(closure);
+            closure_with_call(closure);
+        },
+    );
+    assert_eq!(value, 3);
+}
+
+/// Test that using a Closure::with closure after the body returns throws an error
+#[wasm_bindgen_test]
+fn closure_with_use_after_free_throws() {
+    // Cache the closure's JS function during the `with` body
+    Closure::with(
+        &mut || {
+            // This closure body doesn't matter - we just want to cache the JS function
+        },
+        |closure| {
+            closure_with_cache(closure);
+        },
+    );
+
+    // After `with` returns, the closure has been invalidated.
+    // Calling it should throw an error.
+    let result = closure_with_call_cached();
+    let err = result.expect_err("calling closure after Closure::with should throw");
+    // Print the error for debugging
+    wasm_bindgen::log(&format!("Error debug: {:?}", err).into());
+    wasm_bindgen::log(
+        &format!(
+            "Error type: {}",
+            err.js_typeof().as_string().unwrap_or_default()
+        )
+        .into(),
+    );
+    if let Some(s) = err.as_string() {
+        wasm_bindgen::log(&format!("Error as_string: {}", s).into());
+    }
+    if let Some(e) = err.dyn_ref::<js_sys::Error>() {
+        wasm_bindgen::log(&format!("Error message: {}", e.message()).into());
+    }
+}

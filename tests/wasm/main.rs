@@ -22,7 +22,7 @@ use wasm_bindgen::prelude::*;
 // pub mod bigint;
 // pub mod char;
 pub mod classes;
-// pub mod closures;
+pub mod closures;
 // pub mod comments;
 // pub mod duplicate_deps;
 // pub mod duplicates;
