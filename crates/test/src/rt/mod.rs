@@ -101,7 +101,7 @@ use core::pin::Pin;
 use core::task::{self, Poll};
 use js_sys::{Array, Function, Promise};
 pub use wasm_bindgen;
-use wasm_bindgen::closure::ClosureBorrow;
+
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::future_to_promise;
 
@@ -830,7 +830,7 @@ impl<F: Future<Output = Result<(), JsValue>>> Future for TestFuture<F> {
             wasm_bindgen::log(&JsValue::from_str("closure 2"));
         };
         wasm_bindgen::log(&JsValue::from_str("invoke 2"));
-        ClosureBorrow::with(&mut func, |closure| invoke_closure(closure));
+        Closure::with(&mut func, |closure| invoke_closure(closure));
         let result = CURRENT_OUTPUT.set(&output, || {
             let mut test = Some(test);
             wasm_bindgen::log(&JsValue::from_str("invoke 3"));
@@ -838,7 +838,7 @@ impl<F: Future<Output = Result<(), JsValue>>> Future for TestFuture<F> {
                 let test = test.take().unwrap_throw();
                 future_output = Some(test.poll(cx))
             };
-            ClosureBorrow::with(&mut func, |closure| invoke_closure(closure))
+            Closure::with(&mut func, |closure| invoke_closure(closure))
         });
         match (result, future_output) {
             (_, Some(Poll::Ready(result))) => Poll::Ready(result),

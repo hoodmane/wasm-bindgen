@@ -260,8 +260,8 @@ pub struct Closure<T: ?Sized> {
     _marker: PhantomData<Box<T>>,
 }
 
-/// Closure wrapper type for borrow
-pub struct ClosureBorrow<'a, T: ?Sized> {
+/// Internal closure wrapper type for borrowed closures.
+struct ClosureBorrow<'a, T: ?Sized> {
     // Use ManuallyDrop to prevent drop glue from running, which would cause
     // the drop checker to be overly conservative about lifetimes.
     // The inner Closure's drop impl does nothing for borrowed closures anyway.
@@ -270,11 +270,7 @@ pub struct ClosureBorrow<'a, T: ?Sized> {
 }
 
 impl<'a, T: WasmClosure + ?Sized + 'a> ClosureBorrow<'a, T> {
-    /// Creates a new borrowed closure from a concrete closure type or trait object.
-    ///
-    /// This works with both concrete closure types (`&mut || {}`) and trait objects
-    /// (`&mut dyn FnMut()`).
-    pub fn new<F>(t: &'a mut F) -> ClosureBorrow<'a, T>
+    fn new<F>(t: &'a mut F) -> ClosureBorrow<'a, T>
     where
         F: UnsizeClosureRef<'a, T> + ?Sized,
     {
@@ -295,10 +291,7 @@ impl<'a, T: WasmClosure + ?Sized + 'a> ClosureBorrow<'a, T> {
         }
     }
 
-    /// Creates a new borrowed closure from a concrete closure type or trait object.
-    ///
-    /// Unlike `new`, this version does NOT catch panics.
-    pub fn new_aborting<F>(t: &'a mut F) -> ClosureBorrow<'a, T>
+    fn new_aborting<F>(t: &'a mut F) -> ClosureBorrow<'a, T>
     where
         F: UnsizeClosureRef<'a, T> + ?Sized,
     {
@@ -317,38 +310,6 @@ impl<'a, T: WasmClosure + ?Sized + 'a> ClosureBorrow<'a, T> {
             closure: mem::ManuallyDrop::new(closure),
             _lifetime: PhantomData,
         }
-    }
-
-    /// Executes a callback with a borrowed closure, guaranteeing the closure
-    /// is dropped before the borrowed data's lifetime ends.
-    ///
-    /// This is the safest way to use `ClosureBorrow` as it ensures proper
-    /// cleanup ordering.
-    ///
-    /// # Example
-    /// ```ignore
-    /// let mut func = || { println!("hello"); };
-    /// ClosureBorrow::with(&mut func, |closure| {
-    ///     js_function_that_calls_closure(closure);
-    /// });
-    /// // closure is guaranteed to be dropped here
-    /// ```
-    pub fn with<F, R>(t: &'a mut F, f: impl FnOnce(&Closure<T>) -> R) -> R
-    where
-        F: UnsizeClosureRef<'a, T> + ?Sized,
-    {
-        let borrow = Self::new(t);
-        f(&borrow.closure)
-        // borrow is dropped here, before 'a ends
-    }
-
-    /// Like `with`, but creates a non-unwinding closure.
-    pub fn with_aborting<F, R>(t: &'a mut F, f: impl FnOnce(&Closure<T>) -> R) -> R
-    where
-        F: UnsizeClosureRef<'a, T> + ?Sized,
-    {
-        let borrow = Self::new_aborting(t);
-        f(&borrow.closure)
     }
 }
 
@@ -423,6 +384,45 @@ where
         F: MaybeUnwindSafe + IntoWasmClosure<T> + ?Sized,
     {
         Self::_wrap(data.unsize(), true)
+    }
+
+    /// Executes a callback with a borrowed closure, guaranteeing the closure
+    /// is dropped before the borrowed data's lifetime ends.
+    ///
+    /// Unlike `Closure::new`, this does not require the closure to be `'static`.
+    /// The closure is only valid for the duration of the callback.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let mut count = 0;
+    /// Closure::with(&mut || {
+    ///     count += 1;
+    /// }, |closure| {
+    ///     js_function_that_calls_closure(closure);
+    /// });
+    /// assert_eq!(count, 1);
+    /// ```
+    pub fn with<'a, F, R>(t: &'a mut F, f: impl FnOnce(&Closure<T>) -> R) -> R
+    where
+        F: UnsizeClosureRef<'a, T> + ?Sized,
+        T: 'a,
+    {
+        let borrow = ClosureBorrow::<'a, T>::new(t);
+        f(&borrow.closure)
+        // borrow is dropped here, before the borrowed data's lifetime ends
+    }
+
+    /// Like `with`, but creates a non-unwinding closure.
+    ///
+    /// Use this when you don't need panic catching across the JS boundary
+    /// or prefer abort-on-panic behavior.
+    pub fn with_aborting<'a, F, R>(t: &'a mut F, f: impl FnOnce(&Closure<T>) -> R) -> R
+    where
+        F: UnsizeClosureRef<'a, T> + ?Sized,
+        T: 'a,
+    {
+        let borrow = ClosureBorrow::<'a, T>::new_aborting(t);
+        f(&borrow.closure)
     }
 
     /// A more direct version of `Closure::new` which creates a `Closure` from
