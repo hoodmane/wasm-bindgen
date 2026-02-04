@@ -258,49 +258,6 @@ pub struct Closure<T: ?Sized> {
     _marker: PhantomData<Box<T>>,
 }
 
-/// Internal closure wrapper type for borrowed closures.
-struct ClosureBorrow<T: ?Sized> {
-    // When dropped, the inner Closure's Drop impl calls _wbg_cb_unref() which
-    // invalidates the closure on the JS side by setting state.a = state.b = 0.
-    closure: Closure<T>,
-}
-
-impl<T: WasmClosure + ?Sized> ClosureBorrow<T> {
-    fn new<F>(t: &mut F) -> ClosureBorrow<T>
-    where
-        F: UnsizeClosureRef<T> + ?Sized,
-    {
-        let t: &mut T = t.unsize_closure_ref();
-        let (ptr, len): (u32, u32) = unsafe { mem::transmute_copy(&t) };
-        let closure = Closure {
-            js: crate::__rt::wbg_cast(BorrowedClosure::<T> {
-                data: WasmSlice { ptr, len },
-                unwind_safe: true,
-                _marker: PhantomData::<T>,
-            }),
-            _marker: PhantomData::<Box<T>>,
-        };
-        ClosureBorrow { closure }
-    }
-
-    fn new_aborting<F>(t: &mut F) -> ClosureBorrow<T>
-    where
-        F: UnsizeClosureRef<T> + ?Sized,
-    {
-        let t: &mut T = t.unsize_closure_ref();
-        let (ptr, len): (u32, u32) = unsafe { mem::transmute_copy(&t) };
-        let closure = Closure {
-            js: crate::__rt::wbg_cast(BorrowedClosure::<T> {
-                data: WasmSlice { ptr, len },
-                unwind_safe: false,
-                _marker: PhantomData::<T>,
-            }),
-            _marker: PhantomData::<Box<T>>,
-        };
-        ClosureBorrow { closure }
-    }
-}
-
 fn _assert_compiles<T>(mut pin: core::pin::Pin<&mut Closure<T>>) {
     let _ = &mut *pin;
 }
@@ -374,6 +331,27 @@ where
         Self::_wrap(data.unsize(), true)
     }
 
+    /// Creates a `Closure` from borrowed data. Used internally by `with` and `with_aborting`.
+    ///
+    /// The closure stores a raw pointer to the borrowed data and is only valid
+    /// for as long as that data lives. When dropped, the closure is invalidated
+    /// on the JS side by setting `state.a = state.b = 0`.
+    fn from_borrowed<F>(t: &mut F, unwind_safe: bool) -> Closure<T>
+    where
+        F: UnsizeClosureRef<T> + ?Sized,
+    {
+        let t: &mut T = t.unsize_closure_ref();
+        let (ptr, len): (u32, u32) = unsafe { mem::transmute_copy(&t) };
+        Closure {
+            js: crate::__rt::wbg_cast(BorrowedClosure::<T> {
+                data: WasmSlice { ptr, len },
+                unwind_safe,
+                _marker: PhantomData::<T>,
+            }),
+            _marker: PhantomData::<Box<T>>,
+        }
+    }
+
     /// Executes a callback with a borrowed closure, guaranteeing the closure
     /// is dropped before the borrowed data's lifetime ends.
     ///
@@ -397,13 +375,13 @@ where
     where
         F: UnsizeClosureRef<T> + ?Sized,
     {
-        let borrow = ClosureBorrow::<T>::new(t);
+        let closure = Self::from_borrowed(t, true);
         // SAFETY: T and F::Static have the same memory layout; only the lifetime
         // in the type differs. The closure is dropped before this function returns,
         // ensuring the borrowed data outlives the closure.
-        let static_ref: &Closure<F::Static> = unsafe { mem::transmute(&borrow.closure) };
+        let static_ref: &Closure<F::Static> = unsafe { mem::transmute(&closure) };
         f(static_ref)
-        // borrow is dropped here, before the borrowed data's lifetime ends
+        // closure is dropped here, before the borrowed data's lifetime ends
     }
 
     /// Like `with`, but creates a non-unwinding closure.
@@ -414,9 +392,9 @@ where
     where
         F: UnsizeClosureRef<T> + ?Sized,
     {
-        let borrow = ClosureBorrow::<T>::new_aborting(t);
+        let closure = Self::from_borrowed(t, false);
         // SAFETY: Same as `with` - T and F::Static have the same layout.
-        let static_ref: &Closure<F::Static> = unsafe { mem::transmute(&borrow.closure) };
+        let static_ref: &Closure<F::Static> = unsafe { mem::transmute(&closure) };
         f(static_ref)
     }
 
