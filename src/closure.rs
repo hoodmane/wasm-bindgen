@@ -802,9 +802,7 @@ where
 {
     fn drop(&mut self) {
         // For borrowed closures, there's no destructor or _wbg_cb_unref on the JS side
-        if self.borrowed {
-            return;
-        }
+        assert!(!self.borrowed, "Borrowed Closure should be ManuallyDrop");
         // Decrease refcount on the JS side, this will automatically free
         // the Rust data if we're the last owner.
         self.js._wbg_cb_unref();
