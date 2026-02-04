@@ -840,9 +840,3 @@ impl<T: ?Sized + WasmClosure> IntoWasmClosure<T> for T {
 pub trait UnsizeClosureRef<T: ?Sized> {
     fn unsize_closure_ref(&mut self) -> &mut T;
 }
-
-impl<T: ?Sized + WasmClosure> UnsizeClosureRef<T> for T {
-    fn unsize_closure_ref(&mut self) -> &mut T {
-        self
-    }
-}
