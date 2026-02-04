@@ -269,8 +269,6 @@ pub struct ClosureBorrow<'a, T: ?Sized> {
 impl<'a, T: WasmClosure + ?Sized> ClosureBorrow<'a, T> {
     /// Creates a new borrowed closure
     pub fn new<F>(t: &'a F) -> ClosureBorrow<'a, T>
-    where
-        F: MaybeUnwindSafe,
     {
         let (ptr, len): (u32, u32) = unsafe { mem::transmute_copy(t) };
         // log(&JsValue::from_str(&std::format!(">> {ptr} {len}")));
@@ -341,7 +339,7 @@ where
     ///   etc.)
     pub fn new<F>(t: F) -> Closure<T>
     where
-        F: MaybeUnwindSafe + IntoWasmClosure<T> + 'static,
+        F: IntoWasmClosure<T> + 'static,
     {
         Self::_wrap(Box::new(t).unsize(), true)
     }
@@ -666,7 +664,14 @@ where
 {
     type Abi = WasmSlice;
     fn into_abi(self) -> WasmSlice {
-        self.data
+        let WasmSlice {ptr, mut len} = self.data;
+        if self.unwind_safe {
+            len |= 0x80000000;
+        }
+        WasmSlice {
+            ptr,
+            len,
+        }
     }
 }
 

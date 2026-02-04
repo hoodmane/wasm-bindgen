@@ -810,12 +810,16 @@ impl<F: Future<Output = Result<(), JsValue>>> Future for TestFuture<F> {
         // move `test` so this should be safe
         let test = unsafe { Pin::map_unchecked_mut(self, |me| &mut me.test) };
         let mut future_output = None;
+        let func = Box::leak(Box::new(|| {
+            
+        }));
+        __wbg_test_invoke(&Closure::new(func));
+        let func: &mut dyn FnMut() = Box::leak(Box::new(|| {
+            
+        }));
         let result = CURRENT_OUTPUT.set(&output, || {
             let mut test = AssertUnwindSafe(Some(test));
-            __wbg_test_invoke(ClosureBorrow::new(&AssertUnwindSafe(|| {
-                let test = test.0.take().unwrap_throw();
-                future_output = Some(test.poll(cx))
-            })).as_ref())
+            __wbg_test_invoke(ClosureBorrow::new(&func).as_ref())
         });
         match (result, future_output) {
             (_, Some(Poll::Ready(result))) => Poll::Ready(result),
