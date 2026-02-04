@@ -4,17 +4,20 @@ use core::mem;
 #[cfg(all(feature = "std", target_arch = "wasm32", panic = "unwind"))]
 use crate::__rt::maybe_catch_unwind;
 use crate::closure::{
-    Closure, IntoWasmClosure, WasmClosure, WasmClosureFnOnce, WasmClosureFnOnceAbort,
+    Closure, IntoWasmClosure, UnsizeClosureRef, WasmClosure, WasmClosureFnOnce,
+    WasmClosureFnOnceAbort,
 };
 use crate::convert::slices::WasmSlice;
 use crate::convert::RefFromWasmAbi;
 use crate::convert::{FromWasmAbi, IntoWasmAbi, ReturnWasmAbi, WasmAbi, WasmRet};
 use crate::describe::{inform, WasmDescribe, FUNCTION};
+use crate::log;
 use crate::throw_str;
 use crate::JsValue;
 use crate::UnwrapThrowExt;
 #[cfg(all(feature = "std", target_arch = "wasm32", panic = "unwind"))]
 use core::panic::AssertUnwindSafe;
+use std::format;
 
 macro_rules! closures {
     // Unwind safe passing
@@ -82,6 +85,7 @@ macro_rules! closures {
             }
             let unwind_safe = (b & 0x80000000) != 0;
             let b = b & 0x7FFFFFFF;
+            log(&JsValue::from_str(&format!("unwind_safe {unwind_safe}, b {b}")));
             let ret = {
                 let f: & $($mut)? dyn $Fn $FnArgs -> R = mem::transmute((a, b));
                 $(
@@ -150,6 +154,13 @@ macro_rules! closures {
             T: 'static + $Fn $FnArgs -> R,
         {
             fn unsize(self: Box<Self>) -> Box<dyn $Fn $FnArgs -> R> { self }
+        }
+
+        impl<'a, T: 'a, $($var: 'a,)* R: 'a> UnsizeClosureRef<'a, dyn $Fn $FnArgs -> R + 'a> for T
+        where
+            T: $Fn $FnArgs -> R,
+        {
+            fn unsize_closure_ref(&'a mut self) -> &'a mut (dyn $Fn $FnArgs -> R + 'a) { self }
         }
     };);
 

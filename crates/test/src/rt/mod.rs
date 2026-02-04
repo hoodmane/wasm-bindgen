@@ -93,7 +93,6 @@ use alloc::format;
 use alloc::rc::Rc;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use wasm_bindgen::closure::ClosureBorrow;
 use core::cell::{Cell, RefCell};
 use core::fmt::{self, Display};
 use core::future::Future;
@@ -102,6 +101,7 @@ use core::pin::Pin;
 use core::task::{self, Poll};
 use js_sys::{Array, Function, Promise};
 pub use wasm_bindgen;
+use wasm_bindgen::closure::ClosureBorrow;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::future_to_promise;
 
@@ -801,6 +801,17 @@ extern "C" {
     fn __wbg_test_invoke(f: &Closure<dyn FnMut()>) -> Result<(), JsValue>;
 }
 
+/// Wrapper that allows invoking a closure with a non-'static lifetime.
+/// This is safe because the closure is invoked synchronously and the reference
+/// doesn't escape.
+fn invoke_closure<'a>(f: &Closure<dyn FnMut() + 'a>) -> Result<(), JsValue> {
+    // SAFETY: The closure is invoked synchronously by JS and the reference
+    // doesn't escape. The lifetime erasure is safe because the closure
+    // will be called and return before this function returns.
+    let f: &Closure<dyn FnMut()> = unsafe { core::mem::transmute(f) };
+    __wbg_test_invoke(f)
+}
+
 impl<F: Future<Output = Result<(), JsValue>>> Future for TestFuture<F> {
     type Output = F::Output;
 
@@ -811,15 +822,23 @@ impl<F: Future<Output = Result<(), JsValue>>> Future for TestFuture<F> {
         let test = unsafe { Pin::map_unchecked_mut(self, |me| &mut me.test) };
         let mut future_output = None;
         let func = Box::leak(Box::new(|| {
-            
+            wasm_bindgen::log(&JsValue::from_str("closure 1"));
         }));
+        wasm_bindgen::log(&JsValue::from_str("invoke 1"));
         __wbg_test_invoke(&Closure::new(func));
-        let func: &mut dyn FnMut() = Box::leak(Box::new(|| {
-            
-        }));
+        let mut func = || {
+            wasm_bindgen::log(&JsValue::from_str("closure 2"));
+        };
+        wasm_bindgen::log(&JsValue::from_str("invoke 2"));
+        ClosureBorrow::with(&mut func, |closure| invoke_closure(closure));
         let result = CURRENT_OUTPUT.set(&output, || {
-            let mut test = AssertUnwindSafe(Some(test));
-            __wbg_test_invoke(ClosureBorrow::new(&func).as_ref())
+            let mut test = Some(test);
+            wasm_bindgen::log(&JsValue::from_str("invoke 3"));
+            let mut func = || {
+                let test = test.take().unwrap_throw();
+                future_output = Some(test.poll(cx))
+            };
+            ClosureBorrow::with(&mut func, |closure| invoke_closure(closure))
         });
         match (result, future_output) {
             (_, Some(Poll::Ready(result))) => Poll::Ready(result),

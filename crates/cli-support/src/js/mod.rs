@@ -322,11 +322,16 @@ impl<'a> Context<'a> {
         for (i, table) in self.module.tables.iter().enumerate() {
             let table_id = table.id();
             // Check if it's already exported
-            let already_exported = self.module.exports.iter().any(|e| {
-                matches!(e.item, walrus::ExportItem::Table(id) if id == table_id)
-            });
+            let already_exported = self
+                .module
+                .exports
+                .iter()
+                .any(|e| matches!(e.item, walrus::ExportItem::Table(id) if id == table_id));
             if !already_exported {
-                let name = table.name.clone().unwrap_or_else(|| format!("__wbindgen_table_{}", i));
+                let name = table
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| format!("__wbindgen_table_{}", i));
                 self.module.exports.add(&name, table_id);
             }
         }

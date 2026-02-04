@@ -262,16 +262,24 @@ pub struct Closure<T: ?Sized> {
 
 /// Closure wrapper type for borrow
 pub struct ClosureBorrow<'a, T: ?Sized> {
-    closure: Closure<T>,
+    // Use ManuallyDrop to prevent drop glue from running, which would cause
+    // the drop checker to be overly conservative about lifetimes.
+    // The inner Closure's drop impl does nothing for borrowed closures anyway.
+    closure: mem::ManuallyDrop<Closure<T>>,
     _lifetime: PhantomData<&'a T>,
 }
 
-impl<'a, T: WasmClosure + ?Sized> ClosureBorrow<'a, T> {
-    /// Creates a new borrowed closure
-    pub fn new<F>(t: &'a F) -> ClosureBorrow<'a, T>
+impl<'a, T: WasmClosure + ?Sized + 'a> ClosureBorrow<'a, T> {
+    /// Creates a new borrowed closure from a concrete closure type or trait object.
+    ///
+    /// This works with both concrete closure types (`&mut || {}`) and trait objects
+    /// (`&mut dyn FnMut()`).
+    pub fn new<F>(t: &'a mut F) -> ClosureBorrow<'a, T>
+    where
+        F: UnsizeClosureRef<'a, T> + ?Sized,
     {
-        let (ptr, len): (u32, u32) = unsafe { mem::transmute_copy(t) };
-        // log(&JsValue::from_str(&std::format!(">> {ptr} {len}")));
+        let t: &mut T = t.unsize_closure_ref();
+        let (ptr, len): (u32, u32) = unsafe { mem::transmute_copy(&t) };
         let closure = Closure {
             js: crate::__rt::wbg_cast(BorrowedClosure::<T> {
                 data: WasmSlice { ptr, len },
@@ -282,17 +290,20 @@ impl<'a, T: WasmClosure + ?Sized> ClosureBorrow<'a, T> {
             _marker: PhantomData::<Box<T>>,
         };
         ClosureBorrow {
-            closure,
+            closure: mem::ManuallyDrop::new(closure),
             _lifetime: PhantomData,
         }
     }
 
-    /// Creates a new borrowed closure
-    pub fn new_aborting<F>(t: &'a F) -> ClosureBorrow<'a, T>
+    /// Creates a new borrowed closure from a concrete closure type or trait object.
+    ///
+    /// Unlike `new`, this version does NOT catch panics.
+    pub fn new_aborting<F>(t: &'a mut F) -> ClosureBorrow<'a, T>
     where
-        F: MaybeUnwindSafe,
+        F: UnsizeClosureRef<'a, T> + ?Sized,
     {
-        let (ptr, len): (u32, u32) = unsafe { mem::transmute_copy(t) };
+        let t: &mut T = t.unsize_closure_ref();
+        let (ptr, len): (u32, u32) = unsafe { mem::transmute_copy(&t) };
         let closure = Closure {
             js: crate::__rt::wbg_cast(BorrowedClosure::<T> {
                 data: WasmSlice { ptr, len },
@@ -303,13 +314,41 @@ impl<'a, T: WasmClosure + ?Sized> ClosureBorrow<'a, T> {
             _marker: PhantomData::<Box<T>>,
         };
         ClosureBorrow {
-            closure,
+            closure: mem::ManuallyDrop::new(closure),
             _lifetime: PhantomData,
         }
     }
 
-    pub fn as_ref(&'a self) -> &'a Closure<T> {
-        &self.closure
+    /// Executes a callback with a borrowed closure, guaranteeing the closure
+    /// is dropped before the borrowed data's lifetime ends.
+    ///
+    /// This is the safest way to use `ClosureBorrow` as it ensures proper
+    /// cleanup ordering.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let mut func = || { println!("hello"); };
+    /// ClosureBorrow::with(&mut func, |closure| {
+    ///     js_function_that_calls_closure(closure);
+    /// });
+    /// // closure is guaranteed to be dropped here
+    /// ```
+    pub fn with<F, R>(t: &'a mut F, f: impl FnOnce(&Closure<T>) -> R) -> R
+    where
+        F: UnsizeClosureRef<'a, T> + ?Sized,
+    {
+        let borrow = Self::new(t);
+        f(&borrow.closure)
+        // borrow is dropped here, before 'a ends
+    }
+
+    /// Like `with`, but creates a non-unwinding closure.
+    pub fn with_aborting<F, R>(t: &'a mut F, f: impl FnOnce(&Closure<T>) -> R) -> R
+    where
+        F: UnsizeClosureRef<'a, T> + ?Sized,
+    {
+        let borrow = Self::new_aborting(t);
+        f(&borrow.closure)
     }
 }
 
@@ -664,14 +703,11 @@ where
 {
     type Abi = WasmSlice;
     fn into_abi(self) -> WasmSlice {
-        let WasmSlice {ptr, mut len} = self.data;
+        let WasmSlice { ptr, mut len } = self.data;
         if self.unwind_safe {
             len |= 0x80000000;
         }
-        WasmSlice {
-            ptr,
-            len,
-        }
+        WasmSlice { ptr, len }
     }
 }
 
@@ -696,8 +732,7 @@ where
 
     fn into_abi(self) -> WasmSlice {
         use core::mem::ManuallyDrop;
-        let (a, b): (usize, usize) =
-            unsafe { mem::transmute_copy(&ManuallyDrop::new(self.data)) };
+        let (a, b): (usize, usize) = unsafe { mem::transmute_copy(&ManuallyDrop::new(self.data)) };
         // Pack unwind_safe into most significant bit (bit 31) of vtable
         let b_with_flag = if self.unwind_safe {
             (b as u32) | 0x80000000
@@ -800,6 +835,21 @@ pub trait IntoWasmClosure<T: ?Sized> {
 
 impl<T: ?Sized + WasmClosure> IntoWasmClosure<T> for T {
     fn unsize(self: Box<Self>) -> Box<T> {
+        self
+    }
+}
+
+/// Trait for converting a mutable reference to a closure into a trait object reference.
+///
+/// This trait is not stable and it's not recommended to use this in bounds or
+/// implement yourself.
+#[doc(hidden)]
+pub trait UnsizeClosureRef<'a, T: ?Sized + 'a>: 'a {
+    fn unsize_closure_ref(&'a mut self) -> &'a mut T;
+}
+
+impl<'a, T: ?Sized + WasmClosure + 'a> UnsizeClosureRef<'a, T> for T {
+    fn unsize_closure_ref(&'a mut self) -> &'a mut T {
         self
     }
 }
