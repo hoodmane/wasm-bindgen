@@ -318,24 +318,6 @@ impl<'a> Context<'a> {
         &mut self,
         module_name: &str,
     ) -> Result<(String, String, Option<String>), Error> {
-        // Export all tables for debugging
-        for (i, table) in self.module.tables.iter().enumerate() {
-            let table_id = table.id();
-            // Check if it's already exported
-            let already_exported = self
-                .module
-                .exports
-                .iter()
-                .any(|e| matches!(e.item, walrus::ExportItem::Table(id) if id == table_id));
-            if !already_exported {
-                let name = table
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| format!("__wbindgen_table_{}", i));
-                self.module.exports.add(&name, table_id);
-            }
-        }
-
         // Finalize all bindings for JS classes. This is where we'll generate JS
         // glue for all classes as well as finish up a few final imports like
         // `__wrap` and such.
@@ -3661,17 +3643,9 @@ if (require('worker_threads').isMainThread) {{
                 assert!(!catch);
                 assert!(!log_error);
 
-                let adapter_name = self.export_adapter_name(id);
                 self.globals.push_str("function ");
-                self.globals.push_str(&adapter_name);
-                // Add debugger statement for invoke adapters (closures)
-                if adapter_name.contains("invoke") {
-                    // Insert debugger before the function body
-                    let code = code.replacen("{", "{\n    debugger;", 1);
-                    self.globals.push_str(&code);
-                } else {
-                    self.globals.push_str(&code);
-                }
+                self.globals.push_str(&self.export_adapter_name(id));
+                self.globals.push_str(&code);
                 self.globals.push_str("\n\n");
             }
         }

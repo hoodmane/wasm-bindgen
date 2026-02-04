@@ -156,11 +156,11 @@ macro_rules! closures {
             fn unsize(self: Box<Self>) -> Box<dyn $Fn $FnArgs -> R> { self }
         }
 
-        impl<'a, T: 'a, $($var: 'a,)* R: 'a> UnsizeClosureRef<'a, dyn $Fn $FnArgs -> R + 'a> for T
+        impl<'a, T: 'a, $($var: 'a,)* R: 'a> UnsizeClosureRef<dyn $Fn $FnArgs -> R + 'a> for T
         where
             T: $Fn $FnArgs -> R,
         {
-            fn unsize_closure_ref(&'a mut self) -> &'a mut (dyn $Fn $FnArgs -> R + 'a) { self }
+            fn unsize_closure_ref(&mut self) -> &mut (dyn $Fn $FnArgs -> R + 'a) { self }
         }
     };);
 
