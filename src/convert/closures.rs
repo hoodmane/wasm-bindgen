@@ -116,6 +116,7 @@ macro_rules! closures {
             if a == 0 {
                 throw_str("closure invoked recursively or after being dropped");
             }
+            let b = b & 0x7FFFFFFF;
             let ret = {
                 let f: & $($mut)? dyn $Fn $FnArgs -> R = mem::transmute((a, b));
                 $(
