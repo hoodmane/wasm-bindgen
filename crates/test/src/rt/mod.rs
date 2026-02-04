@@ -801,17 +801,6 @@ extern "C" {
     fn __wbg_test_invoke(f: &Closure<dyn FnMut()>) -> Result<(), JsValue>;
 }
 
-/// Wrapper that allows invoking a closure with a non-'static lifetime.
-/// This is safe because the closure is invoked synchronously and the reference
-/// doesn't escape.
-fn invoke_closure<'a>(f: &Closure<dyn FnMut() + 'a>) -> Result<(), JsValue> {
-    // SAFETY: The closure is invoked synchronously by JS and the reference
-    // doesn't escape. The lifetime erasure is safe because the closure
-    // will be called and return before this function returns.
-    let f: &Closure<dyn FnMut()> = unsafe { core::mem::transmute(f) };
-    __wbg_test_invoke(f)
-}
-
 impl<F: Future<Output = Result<(), JsValue>>> Future for TestFuture<F> {
     type Output = F::Output;
 
@@ -830,7 +819,8 @@ impl<F: Future<Output = Result<(), JsValue>>> Future for TestFuture<F> {
             wasm_bindgen::log(&JsValue::from_str("closure 2"));
         };
         wasm_bindgen::log(&JsValue::from_str("invoke 2"));
-        Closure::with(&mut func, |closure| invoke_closure(closure));
+        // Closure::with erases the lifetime, so we can pass directly to __wbg_test_invoke
+        Closure::with(&mut func, |closure| __wbg_test_invoke(closure));
         let result = CURRENT_OUTPUT.set(&output, || {
             let mut test = Some(test);
             wasm_bindgen::log(&JsValue::from_str("invoke 3"));
@@ -838,7 +828,7 @@ impl<F: Future<Output = Result<(), JsValue>>> Future for TestFuture<F> {
                 let test = test.take().unwrap_throw();
                 future_output = Some(test.poll(cx))
             };
-            Closure::with(&mut func, |closure| invoke_closure(closure))
+            Closure::with(&mut func, |closure| __wbg_test_invoke(closure))
         });
         match (result, future_output) {
             (_, Some(Poll::Ready(result))) => Poll::Ready(result),

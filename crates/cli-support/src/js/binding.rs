@@ -1503,6 +1503,8 @@ fn instruction(
 
                 js.push(format!("{make_closure}({a}, {b}, wasm.{dtor}, {wrapper})"));
             } else {
+                // Borrowed closure - no destructor, but we add _wbg_cb_unref
+                // to invalidate the closure after use
                 let i = js.tmp();
                 js.prelude(&format!("var state{i} = {{a: {a}, b: {b}}};"));
                 let args = (0..*nargs)
@@ -1516,27 +1518,24 @@ fn instruction(
                     js.prelude(&format!(
                         "var cb{i} = ({args}) => {{
                             const a = state{i}.a;
-                            // state{i}.a = 0;
-                            console.log('invoke mutable a:', a, 'b:', state{i}.b);
+                            state{i}.a = 0;
                             try {{
                                 return {wrapper}(a, state{i}.b, {args});
                             }} finally {{
-                                // state{i}.a = a;
+                                state{i}.a = a;
                             }}
                         }};",
                     ));
                 } else {
                     js.prelude(&format!(
-                        "var cb{i} = ({args}) => {{ console.log('invoke immutable a:', state{i}.a, 'b:', state{i}.b); return {wrapper}(state{i}.a, state{i}.b, {args}); }};",
+                        "var cb{i} = ({args}) => {{ return {wrapper}(state{i}.a, state{i}.b, {args}); }};",
                     ));
                 }
 
-                // Make sure to null out our internal pointers when we return
-                // back to Rust to ensure that any lingering references to the
-                // closure will fail immediately due to null pointers passed in
-                // to Rust.
-                // TODO: temporarily commented out for debugging
-                // js.finally(&format!("state{i}.a = state{i}.b = 0;"));
+                // Add _wbg_cb_unref to invalidate the borrowed closure
+                js.prelude(&format!(
+                    "cb{i}._wbg_cb_unref = () => {{ state{i}.a = state{i}.b = 0; }};",
+                ));
                 js.push(format!("cb{i}"));
             }
         }

@@ -69,7 +69,6 @@ test-wasm-bindgen-unwind *ARGS="":
 test-wasm-bindgen-unwind-reinit *ARGS="":
     RUSTFLAGS="-Cpanic=unwind --cfg panicking_tests" \
     RUSTDOCFLAGS="-Cpanic=unwind" \
-    NODE_ARGS="--stack-trace-limit=100" \
     WASM_BINDGEN_ABORT_REINIT=1 \
     RUST_BACKTRACE=1 \
     WASM_BINDGEN_TEST_ONLY_NODE=1 \
