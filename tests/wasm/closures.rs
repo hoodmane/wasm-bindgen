@@ -279,8 +279,30 @@ impl Drop for Dropper {
     }
 }
 
+/// Test that `Closure::once` throws when called more than once.
 #[wasm_bindgen_test]
 fn call_fn_once_twice() {
+    use core::panic::AssertUnwindSafe;
+
+    let called = Rc::new(Cell::new(false));
+
+    let c = Closure::once(AssertUnwindSafe({
+        let called = called.clone();
+        move || {
+            assert!(!called.get());
+            called.set(true);
+        }
+    }));
+
+    many_arity_call_mut1(&c);
+    assert!(called.get());
+
+    // Second call should throw
+    assert!(calling_it_throws(&c));
+}
+
+#[wasm_bindgen_test]
+fn call_fn_once_aborting_twice() {
     let dropped = Rc::new(Cell::new(false));
     let dropper = Dropper(dropped.clone());
     let called = Rc::new(Cell::new(false));

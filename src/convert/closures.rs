@@ -233,32 +233,7 @@ macro_rules! closures {
             }
 
             fn into_js_function(self) -> JsValue {
-                use alloc::rc::Rc;
-                use crate::__rt::WasmRefCell;
-
-                let rc1 = Rc::new(WasmRefCell::new(None));
-                let rc2 = rc1.clone();
-
-                let closure = Closure::once(closures!(@closure $FnArgs $($var)* {
-                    let result = self($($var),*);
-
-                    // And then drop the `Rc` holding this function's `Closure`
-                    // alive.
-                    debug_assert_eq!(Rc::strong_count(&rc2), 1);
-                    let option_closure = rc2.borrow_mut().take();
-                    debug_assert!(option_closure.is_some());
-                    drop(option_closure);
-
-                    result
-                }));
-
-                let js_val = closure.as_ref().clone();
-
-                *rc1.borrow_mut() = Some(closure);
-                debug_assert_eq!(Rc::strong_count(&rc1), 2);
-                drop(rc1);
-
-                js_val
+                Closure::once(self).into_js_value()
             }
         }
 
@@ -278,33 +253,7 @@ macro_rules! closures {
             }
 
             fn into_js_function(self) -> JsValue {
-                use alloc::rc::Rc;
-                use crate::__rt::WasmRefCell;
-
-                let rc1 = Rc::new(WasmRefCell::new(None));
-                let rc2 = rc1.clone();
-
-                // TODO: Unwind safety for FnOnce
-                let closure = Closure::once_aborting(closures!(@closure $FnArgs $($var)* {
-                    let result = self($($var),*);
-
-                    // And then drop the `Rc` holding this function's `Closure`
-                    // alive.
-                    debug_assert_eq!(Rc::strong_count(&rc2), 1);
-                    let option_closure = rc2.borrow_mut().take();
-                    debug_assert!(option_closure.is_some());
-                    drop(option_closure);
-
-                    result
-                }));
-
-                let js_val = closure.as_ref().clone();
-
-                *rc1.borrow_mut() = Some(closure);
-                debug_assert_eq!(Rc::strong_count(&rc1), 2);
-                drop(rc1);
-
-                js_val
+                Closure::once_aborting(self).into_js_value()
             }
         }
     };
