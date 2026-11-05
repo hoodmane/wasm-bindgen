@@ -21,6 +21,16 @@
   `async` imports and `experimental_generic_mono` generics. The safe integer range is checked under debug assertions.
   [#5455](https://github.com/wasm-bindgen/wasm-bindgen/pull/5455)
 
+* `panic=unwind` (the default strategy on `wasm32-unknown-emscripten`) is now
+  supported across the `wasm-bindgen` boundary on Emscripten, with both its
+  default legacy exception-handling dialect and the standardized `exnref` one
+  (`-sWASM_LEGACY_EXCEPTIONS=0`): panics reaching an export or closure are
+  thrown to JavaScript as `PanicError` with the shadow stack restored,
+  `#[wasm_bindgen(catch)]` imports work, and traps terminate the instance,
+  firing `set_on_abort` and refusing later calls. `-Cpanic=abort` is no longer
+  required in the Emscripten build configuration.
+  [#5165](https://github.com/wasm-bindgen/wasm-bindgen/issues/5165)
+
 ### Changed
 
 * Awaiting a `js_sys::Promise<T, E>` converts the rejection reason through

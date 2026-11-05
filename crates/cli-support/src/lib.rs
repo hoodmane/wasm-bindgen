@@ -600,15 +600,15 @@ impl Bindgen {
         // This runs after externref processing so that we have access to the
         // externref table and allocation function.
         //
-        // Emscripten output may contain wasm exception-handling instructions
-        // from linked libc++ / embind that have no relation to wasm-bindgen's
-        // `#[wasm_bindgen(catch)]` machinery, and the wasm-bindgen runtime
-        // intrinsics (`__externref_table`, `__externref_table_alloc`,
-        // `__wbindgen_exn_store`) may be absent. Skip the transform until
-        // proper emscripten-mode catch support lands.
-        if !matches!(self.mode, OutputMode::Emscripten) {
-            run_exception_handling_transforms(&mut module, eh_version)?;
-        }
+        // On Emscripten the exception-handling instructions come from
+        // `-fwasm-exceptions` (legacy `try`/`catch` by default), and Rust
+        // panics are thrown as C++ exceptions on the `__cpp_exception` tag.
+        // The wrappers only ever handle the JS tag and `catch_all`-rethrow
+        // everything else, so they compose with that runtime unchanged. The
+        // pass skips itself when the wasm-bindgen runtime's termination flag
+        // isn't present (e.g. foreign EH instructions from embind/libc++
+        // without `panic=unwind`).
+        run_exception_handling_transforms(&mut module, eh_version)?;
 
         // We've done a whole bunch of transformations to the Wasm module, many
         // of which leave "garbage" lying around, so let's prune out all our

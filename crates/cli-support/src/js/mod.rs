@@ -4184,6 +4184,9 @@ if (require('worker_threads').isMainThread) {{
     /// through untouched so the recoverable-vs-abort discrimination in
     /// `__wbg_handle_catch` keeps working.
     fn expose_wrap_error(&mut self) {
+        // On emscripten the polyfilled tag is the `$__wbindgen_jstag_polyfill`
+        // library value (see `generate_jstag_import`); the dep edge keeps it
+        // in the build and declared ahead of this helper.
         self.intrinsic(
             "wrapError".into(),
             "wrapError".into(),
@@ -4198,7 +4201,7 @@ if (require('worker_threads').isMainThread) {{
             }
             "
             .into(),
-            &[],
+            &["__wbindgen_jstag_polyfill"],
         );
     }
 
@@ -4517,14 +4520,13 @@ if (require('worker_threads').isMainThread) {{
             "PanicError".into(),
             {
                 if matches!(self.config.mode, OutputMode::Emscripten) {
+                    // A single class (not a per-throw factory) so that
+                    // `instanceof` works across throws, matching the other
+                    // targets. The `=` prefix makes jsifier emit
+                    // `var PanicError = class ...`.
                     "addToLibrary({
-                    $PanicError: function(message) {
-                        class PanicError extends Error {}
-                        Object.defineProperty(PanicError.prototype, 'name', {
-                            value: 'PanicError',
-                        });
-                        return new PanicError(message);
-                    }
+                    $PanicError: \"=class PanicError extends Error {}\",
+                    $PanicError__postset: \"Object.defineProperty(PanicError.prototype, 'name', { value: 'PanicError' });\",
                 });\n"
                         .into()
                 } else {
@@ -5118,8 +5120,17 @@ if (require('worker_threads').isMainThread) {{
 
         if matches!(self.config.mode, OutputMode::Emscripten) {
             if self.aux.legacy_exception_handling {
+                // The polyfilled tag is a library value of its own so that
+                // `wrapError` (which throws against it) can depend on it; the
+                // import is an alias of that value. Keeping it per-module
+                // rather than on `globalThis` lets several emscripten modules
+                // coexist on one page.
                 self.emscripten_library.push_str(
-                    "addToLibrary({\n  __wbindgen_jstag: \"(globalThis.__wbindgen_jstag = new WebAssembly.Tag({ parameters: ['externref'] }))\",\n});\n",
+                    "addToLibrary({\n  \
+                       $__wbindgen_jstag_polyfill: \"new WebAssembly.Tag({ parameters: ['externref'] })\",\n  \
+                       __wbindgen_jstag: \"=__wbindgen_jstag_polyfill\",\n  \
+                       __wbindgen_jstag__deps: ['$__wbindgen_jstag_polyfill'],\n\
+                     });\n",
                 );
             } else {
                 self.emscripten_library
@@ -5160,23 +5171,16 @@ if (require('worker_threads').isMainThread) {{
         });
 
         if matches!(self.config.mode, OutputMode::Emscripten) {
+            // Same shape as the JSTag polyfill above: a `$`-value the
+            // `__wbindgen_throw`/`__wbindgen_rethrow` intrinsics and
+            // `__wbg_handle_catch` depend on, aliased by the wasm import.
             self.emscripten_library.push_str(
-                r#"
-addToLibrary({
-    __wbindgen_wrapped_jstag: "(globalThis.__wbindgen_wrapped_jstag = new WebAssembly.Tag({ parameters: ['externref'] }))",
-
-    __wbindgen_wrapped_jstag__postset: `
-        function __wbg_call_guard() {}
-
-        function __wbg_handle_catch(e) {
-            if (e instanceof WebAssembly.Exception && e.is(globalThis.__wbindgen_wrapped_jstag)) {
-                throw e.getArg(globalThis.__wbindgen_wrapped_jstag, 0);
-            }
-            throw e;
-        }
-    `
-});
-"#);
+                "addToLibrary({\n  \
+                   $__wbindgen_wrapped_jstag: \"new WebAssembly.Tag({ parameters: ['externref'] })\",\n  \
+                   __wbindgen_wrapped_jstag: \"=__wbindgen_wrapped_jstag\",\n  \
+                   __wbindgen_wrapped_jstag__deps: ['$__wbindgen_wrapped_jstag'],\n\
+                 });\n",
+            );
             return Ok(());
         }
 
@@ -5233,6 +5237,121 @@ addToLibrary({
         );
     }
 
+    /// Record that the adapter being generated references the
+    /// `__wbindgen_wrapped_jstag` value so the emscripten library pulls the
+    /// `$__wbindgen_wrapped_jstag` symbol in for it. No-op elsewhere.
+    fn register_wrapped_jstag_dep(&mut self) {
+        if matches!(self.config.mode, OutputMode::Emscripten) {
+            self.adapter_deps
+                .insert("__wbindgen_wrapped_jstag".to_string());
+        }
+    }
+
+    /// JS expression for the index into `HEAP32` of the runtime's
+    /// `__instance_terminated` flag. The flag is reached through the exported
+    /// global when rustc exported it, or through the
+    /// `__instance_terminated_ptr` accessor the runtime provides on
+    /// emscripten (where only functions make it onto the export list).
+    fn terminated_flag_index_expr(&mut self) -> Result<String, Error> {
+        use crate::transforms::catch_handler::{get_terminated_addr, TerminatedAddr};
+        match get_terminated_addr(self.module) {
+            Some(TerminatedAddr::Const(_)) => Ok(format!(
+                "{}.value / 4",
+                self.wasm_export_ref("__instance_terminated")
+            )),
+            Some(TerminatedAddr::Func(f)) => {
+                let name = self.export_name_of(f);
+                Ok(format!("{}() / 4", self.wasm_export_ref(&name)))
+            }
+            None => bail!("__instance_terminated flag not found in module"),
+        }
+    }
+
+    /// JS expression for the index into `HEAP32` of the runtime's
+    /// `__abort_handler` slot; see `terminated_flag_index_expr`.
+    fn abort_handler_index_expr(&mut self) -> Result<String, Error> {
+        if self
+            .module
+            .exports
+            .iter()
+            .any(|e| e.name == "__abort_handler" && matches!(e.item, walrus::ExportItem::Global(_)))
+        {
+            return Ok(format!(
+                "{}.value / 4",
+                self.wasm_export_ref("__abort_handler")
+            ));
+        }
+        let accessor = self.module.exports.iter().find_map(|e| match e.item {
+            walrus::ExportItem::Function(f) if e.name == "__abort_handler_ptr" => Some(f),
+            _ => None,
+        });
+        match accessor {
+            Some(f) => {
+                let name = self.export_name_of(f);
+                Ok(format!("{}() / 4", self.wasm_export_ref(&name)))
+            }
+            None => bail!("__abort_handler slot not found in module"),
+        }
+    }
+
+    /// Emscripten flavour of `maybe_generate_call_guard`: the same
+    /// termination guard and catch handler, registered as library symbols so
+    /// the hoisted exports (which reference them by bare name) pick them up
+    /// through `$initBindgen__deps`. Reinit is never generated on emscripten
+    /// (it owns instantiation), so this only covers the abort path.
+    fn generate_emscripten_call_guard(&mut self) -> Result<(), Error> {
+        if self.aux.wrapped_js_tag.is_none() {
+            return Ok(());
+        }
+        let memory = get_memory(self.module).unwrap();
+        let heap = self.expose_int32_memory(memory).access(true);
+        let table = self.export_function_table()?;
+        let table = self.wasm_export_ref(&table);
+        let terminated = self.terminated_flag_index_expr()?;
+        let abort_handler = self.abort_handler_index_expr()?;
+
+        let library = format!(
+            "addToLibrary({{
+    $__wbg_terminated_addr: 'undefined',
+    $__wbg_called_abort: 'false',
+    $__wbg_call_abort_hook__deps: ['$__wbg_called_abort'],
+    $__wbg_call_abort_hook: function() {{
+        __wbg_called_abort = true;
+        try {{
+            const idx = {heap}[{abort_handler}];
+            if (idx) {table}.get(idx)();
+        }} catch(_) {{}}
+    }},
+    $__wbg_handle_catch__deps: ['$__wbg_terminated_addr', '$__wbg_call_abort_hook', '$__wbindgen_wrapped_jstag'],
+    $__wbg_handle_catch: function(e) {{
+        if (e instanceof WebAssembly.Exception && e.is(__wbindgen_wrapped_jstag)) {{
+            throw e.getArg(__wbindgen_wrapped_jstag, 0);
+        }}
+        __wbg_terminated_addr ??= {terminated};
+        {heap}[__wbg_terminated_addr] = 1;
+        __wbg_call_abort_hook();
+        throw e;
+    }},
+    $__wbg_call_guard__deps: ['$__wbg_terminated_addr', '$__wbg_called_abort', '$__wbg_call_abort_hook', '$__wbg_handle_catch'],
+    $__wbg_call_guard: function() {{
+        __wbg_terminated_addr ??= {terminated};
+        const flag = {heap}[__wbg_terminated_addr];
+        if (flag) {{
+            if (!__wbg_called_abort) {{
+                __wbg_call_abort_hook();
+            }}
+            throw new Error('Module terminated');
+        }}
+    }},
+}});
+"
+        );
+        // Registers the `__wbg_call_guard` adapter dep as well, which pulls
+        // in the rest of the group through its `__deps`.
+        self.intrinsic("__wbg_call_guard".into(), None, library.into(), &[]);
+        Ok(())
+    }
+
     /// Emit a `__wbg_call_guard`, handling hard aborts and reinitialization
     /// - Hard aborts are emitted when we are using js exception tagging.
     /// - For reinitialization, checks __wbg_reinit_scheduled.
@@ -5241,6 +5360,10 @@ addToLibrary({
         // No call guard needed when we dont have hard aborts or reinit
         if self.aux.wrapped_js_tag.is_none() && !self.generate_reinit {
             return Ok(());
+        }
+
+        if matches!(self.config.mode, OutputMode::Emscripten) {
+            return self.generate_emscripten_call_guard();
         }
 
         let mut termination_guard = String::from("function __wbg_call_guard() {");
@@ -6577,6 +6700,7 @@ addToLibrary({
             Intrinsic::Throw => {
                 assert_eq!(args.len(), 1);
                 if self.aux.wrapped_js_tag.is_some() {
+                    self.register_wrapped_jstag_dep();
                     format!(
                         "throw new WebAssembly.Exception(__wbindgen_wrapped_jstag, [new Error({})])",
                         args[0]
@@ -6589,6 +6713,7 @@ addToLibrary({
             Intrinsic::Rethrow => {
                 assert_eq!(args.len(), 1);
                 if self.aux.wrapped_js_tag.is_some() {
+                    self.register_wrapped_jstag_dep();
                     format!(
                         "throw new WebAssembly.Exception(__wbindgen_wrapped_jstag, [{}])",
                         args[0]

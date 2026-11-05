@@ -928,6 +928,29 @@ static GLOBAL_EXNDATA: ThreadLocalWrapper<Cell<[u32; 2]>> = ThreadLocalWrapper(C
 #[no_mangle]
 pub static mut __instance_terminated: u32 = 0;
 
+/// Address of [`__instance_terminated`].
+///
+/// On Emscripten, rustc hands `emcc` an explicit `EXPORTED_FUNCTIONS` list
+/// built from the crate graph's exported *functions*, so `#[no_mangle]`
+/// statics such as `__instance_terminated` and `__abort_handler` never make
+/// it into the Wasm export section. The CLI's termination machinery reaches
+/// them through these accessors instead (see
+/// `cli-support/src/transforms/catch_handler.rs`). Deliberately not
+/// `__wbindgen`-prefixed: the CLI unexports every `__wbindgen*` symbol once
+/// descriptor processing is done, and these must stay reachable from JS.
+#[cfg(target_os = "emscripten")]
+#[no_mangle]
+pub extern "C" fn __instance_terminated_ptr() -> *mut u32 {
+    core::ptr::addr_of_mut!(__instance_terminated)
+}
+
+/// Address of [`__abort_handler`]; see [`__instance_terminated_ptr`].
+#[cfg(target_os = "emscripten")]
+#[no_mangle]
+pub extern "C" fn __abort_handler_ptr() -> *mut fn() {
+    core::ptr::addr_of_mut!(__abort_handler)
+}
+
 /// Set in-fiber at every resume by the CLI-generated wrapper around a
 /// `#[wasm_bindgen(catch, suspending)]` import (see
 /// `cli-support/src/transforms/jspi.rs`), through

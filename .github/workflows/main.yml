@@ -274,6 +274,12 @@ jobs:
       runs-on: ubuntu-latest
       steps:
       - uses: actions/checkout@v7
+      # Nightly (+ rust-src) is for the exnref unwind build, which rebuilds
+      # `std` with `-Zbuild-std`; stable, installed last, stays the default.
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: wasm32-unknown-emscripten
+          components: rust-src
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-emscripten

@@ -58,8 +58,6 @@ target = "wasm32-unknown-emscripten"
 
 [target.wasm32-unknown-emscripten]
 rustflags = [
-  "-Cpanic=abort",
-  "-Cllvm-args=-enable-emscripten-cxx-exceptions=0",
   "-Crelocation-model=static",
   "-Clink-arg=-sWASM_BINDGEN",
   "-Clink-arg=-Wno-experimental",
@@ -104,17 +102,71 @@ Emscripten's dynamic linking rather than a usable package.
 
 The codegen flags in the configuration above:
 
-- `-Cpanic=abort` — `panic=unwind` is not yet supported across the
-  `wasm-bindgen` boundary on Emscripten
-  ([#5165](https://github.com/wasm-bindgen/wasm-bindgen/issues/5165)).
-- `-Cllvm-args=-enable-emscripten-cxx-exceptions=0` — avoids pulling in a
-  C++ exception runtime that `panic=abort` never uses.
 - `-Crelocation-model=static` — PIC is not needed for a statically linked
   main module.
 
 `-Wno-experimental` silences `emcc`'s warning that `-sWASM_BINDGEN` is an
 experimental setting. Any other `emcc` setting is passed the same way, e.g.
 `"-Clink-arg=-sSTACK_SIZE=8MB"` or `"-Clink-arg=-sALLOW_MEMORY_GROWTH"`.
+
+### Panics
+
+`panic=unwind` is the default strategy on `wasm32-unknown-emscripten` and the
+prebuilt `std` ships with it, so unlike `wasm32-unknown-unknown` no nightly
+toolchain or `-Zbuild-std` is needed. rustc links with `-fwasm-exceptions`:
+panics are thrown as native Wasm exceptions (as C++ exceptions, through
+Emscripten's libunwind) in the legacy `try`/`catch` instruction dialect that
+Emscripten emits by default. `wasm-bindgen` detects that dialect and emits its
+own exception-handling code in the same form, so everything described in
+[Catching panics](catch-unwind.md) and [Handling aborts](handling-aborts.md)
+applies:
+
+- A panic that reaches a `#[wasm_bindgen]` export or closure is caught and
+  rethrown to JavaScript as a `PanicError`; the instance stays usable and the
+  shadow stack is restored.
+- `#[wasm_bindgen(catch)]` imports hand JavaScript exceptions to Rust as
+  `Err`, and exceptions from other imports propagate through Rust frames
+  (running destructors) unchanged.
+- A trap terminates the instance: `set_on_abort` callbacks fire and every
+  later export call throws `Module terminated`. `schedule_reinit()` is a no-op
+  on Emscripten since Emscripten owns instantiation.
+
+This needs an engine with the legacy exception-handling instructions, which
+every current browser and Node.js version has.
+
+#### Standardized (`exnref`) exception handling
+
+Emscripten selects the standardized exception-handling instructions with
+`-sWASM_LEGACY_EXCEPTIONS=0`, which switches its own system libraries. The
+Rust side has to match: user code via `-Cllvm-args=-wasm-use-legacy-eh=0`, and
+`std` by rebuilding it, since the prebuilt one uses the legacy instructions.
+That makes this a nightly + `-Zbuild-std` configuration:
+
+```toml
+[target.wasm32-unknown-emscripten]
+rustflags = [
+  "-Cllvm-args=-wasm-use-legacy-eh=0",
+  "-Clink-arg=-sWASM_LEGACY_EXCEPTIONS=0",
+  "-Crelocation-model=static",
+  "-Clink-arg=-sWASM_BINDGEN",
+  "-Clink-arg=-Wno-experimental",
+  "-Clink-arg=-sMODULARIZE",
+  "-Clink-arg=-sEXPORT_ES6",
+]
+
+[unstable]
+build-std = ["std", "panic_unwind"]
+```
+
+`wasm-bindgen` detects the dialect from the linked module and emits its
+wrappers as `try_table`. The output needs an engine with `exnref` support
+(Node.js 22.22.3+ / 24.15.0+ or a recent browser), as on
+`wasm32-unknown-unknown`.
+
+To opt out of unwinding, build with `-Cpanic=abort` (and
+`-Cllvm-args=-enable-emscripten-cxx-exceptions=0` to avoid linking an unused
+C++ exception runtime). Panics then trap, which terminates the instance like
+on other targets.
 
 ### Output modes
 
@@ -365,8 +417,6 @@ activation keeps its own shadow stack.
 
 ## Limitations
 
-- `-Cpanic=unwind` is not yet supported
-  ([#5165](https://github.com/wasm-bindgen/wasm-bindgen/issues/5165)).
 - `wasm-bindgen-test` supports the target via
   `wasm_bindgen_test_configure!(run_in_emscripten)`, but the harness
   currently only verifies the generated bindings; test bodies are compiled,

@@ -28,9 +28,9 @@
 //! resume hook sees `error=0` there, since the exception is consumed rather
 //! than rethrown.
 //!
-//! Emscripten defaults to the legacy exception-handling instructions and
-//! engines reject modules mixing the two dialects, so the wrappers are emitted
-//! in whichever form the module already uses.
+//! Emscripten defaults to the legacy exception-handling instructions
+//! (`-sWASM_LEGACY_EXCEPTIONS=0` selects exnref), so the wrappers are emitted
+//! in whichever form the module already uses rather than mixing dialects.
 
 use super::jspi::Rejection;
 use crate::wit::{NonstandardWitSection, WasmBindgenAux};
