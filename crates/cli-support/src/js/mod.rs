@@ -4533,10 +4533,11 @@ if (require('worker_threads').isMainThread) {{
                     });\n"
                         .into()
                 } else {
-                    "class PanicError extends Error {}\n\
-                    Object.defineProperty(PanicError.prototype, 'name', {\n    \
-                        value: 'PanicError',\n\
-                    });\n"
+                    "class PanicError extends Error {}
+                Object.defineProperty(PanicError.prototype, 'name', {
+                    value: 'PanicError',
+                });
+                "
                     .into()
                 }
             },
