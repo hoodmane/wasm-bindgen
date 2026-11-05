@@ -930,12 +930,19 @@ pub static mut __instance_terminated: u32 = 0;
 
 /// Address of [`__instance_terminated`].
 ///
-/// On Emscripten, rustc hands `emcc` an explicit `EXPORTED_FUNCTIONS` list
-/// built from the crate graph's exported *functions*, so `#[no_mangle]`
-/// statics such as `__instance_terminated` and `__abort_handler` never make
-/// it into the Wasm export section. The CLI's termination machinery reaches
-/// them through these accessors instead (see
-/// `cli-support/src/transforms/catch_handler.rs`). Deliberately not
+/// On Emscripten targets rustc demotes every `#[no_mangle]` static to the
+/// `Rust` export level (`rustc_codegen_ssa::back::symbol_export::
+/// symbol_export_level`, "WebAssembly cannot export data symbols"), so
+/// `__instance_terminated` and `__abort_handler` are left out of the
+/// `EXPORTED_FUNCTIONS` list it hands `emcc` and never reach the Wasm export
+/// section, unlike on `wasm32-unknown-unknown` where wasm-ld exports them as
+/// address-holding globals. A `-Wl,--export=` link arg would work but can't
+/// be supplied from a library crate (Cargo only applies `rustc-link-arg` to
+/// the emitting package's own targets), so the runtime exports these
+/// accessors instead. Their bodies are just the address, which the CLI folds
+/// to a constant at build time and then drops the exports (see
+/// `static_addr` in `cli-support/src/transforms/catch_handler.rs`), so they
+/// cost nothing at runtime. Deliberately not
 /// `__wbindgen`-prefixed: the CLI unexports every `__wbindgen*` symbol once
 /// descriptor processing is done, and these must stay reachable from JS.
 #[cfg(target_os = "emscripten")]

@@ -5235,58 +5235,14 @@ if (require('worker_threads').isMainThread) {{
         }
     }
 
-    /// JS expression for the index into `HEAP32` of the runtime's
-    /// `__instance_terminated` flag. The flag is reached through the exported
-    /// global when rustc exported it, or through the
-    /// `__instance_terminated_ptr` accessor the runtime provides on
-    /// emscripten (where only functions make it onto the export list).
-    fn terminated_flag_index_expr(&mut self) -> Result<String, Error> {
-        use crate::transforms::catch_handler::{get_terminated_addr, TerminatedAddr};
-        match get_terminated_addr(self.module) {
-            Some(TerminatedAddr::Const(_)) => Ok(format!(
-                "{}.value / 4",
-                self.wasm_export_ref("__instance_terminated")
-            )),
-            Some(TerminatedAddr::Func(f)) => {
-                let name = self.export_name_of(f);
-                Ok(format!("{}() / 4", self.wasm_export_ref(&name)))
-            }
-            None => bail!("__instance_terminated flag not found in module"),
-        }
-    }
-
-    /// JS expression for the index into `HEAP32` of the runtime's
-    /// `__abort_handler` slot; see `terminated_flag_index_expr`.
-    fn abort_handler_index_expr(&mut self) -> Result<String, Error> {
-        if self
-            .module
-            .exports
-            .iter()
-            .any(|e| e.name == "__abort_handler" && matches!(e.item, walrus::ExportItem::Global(_)))
-        {
-            return Ok(format!(
-                "{}.value / 4",
-                self.wasm_export_ref("__abort_handler")
-            ));
-        }
-        let accessor = self.module.exports.iter().find_map(|e| match e.item {
-            walrus::ExportItem::Function(f) if e.name == "__abort_handler_ptr" => Some(f),
-            _ => None,
-        });
-        match accessor {
-            Some(f) => {
-                let name = self.export_name_of(f);
-                Ok(format!("{}() / 4", self.wasm_export_ref(&name)))
-            }
-            None => bail!("__abort_handler slot not found in module"),
-        }
-    }
-
     /// Emscripten flavour of `maybe_generate_call_guard`: the same
     /// termination guard and catch handler, registered as library symbols so
     /// the hoisted exports (which reference them by bare name) pick them up
     /// through `$initBindgen__deps`. Reinit is never generated on emscripten
     /// (it owns instantiation), so this only covers the abort path.
+    ///
+    /// The statics' addresses are link-time constants (folded by the
+    /// catch-handler transform), so they're inlined as `HEAP32` indices.
     fn generate_emscripten_call_guard(&mut self) -> Result<(), Error> {
         if self.aux.wrapped_js_tag.is_none() {
             return Ok(());
@@ -5295,12 +5251,17 @@ if (require('worker_threads').isMainThread) {{
         let heap = self.expose_int32_memory(memory).access(true);
         let table = self.export_function_table()?;
         let table = self.wasm_export_ref(&table);
-        let terminated = self.terminated_flag_index_expr()?;
-        let abort_handler = self.abort_handler_index_expr()?;
+        let Some(terminated) = self.aux.instance_terminated_addr else {
+            bail!("__instance_terminated flag not found in module");
+        };
+        let Some(abort_handler) = self.aux.abort_handler_addr else {
+            bail!("__abort_handler slot not found in module");
+        };
+        let terminated = terminated / 4;
+        let abort_handler = abort_handler / 4;
 
         let library = format!(
             "addToLibrary({{
-    $__wbg_terminated_addr: 'undefined',
     $__wbg_called_abort: 'false',
     $__wbg_call_abort_hook__deps: ['$__wbg_called_abort'],
     $__wbg_call_abort_hook: function() {{
@@ -5310,20 +5271,18 @@ if (require('worker_threads').isMainThread) {{
             if (idx) {table}.get(idx)();
         }} catch(_) {{}}
     }},
-    $__wbg_handle_catch__deps: ['$__wbg_terminated_addr', '$__wbg_call_abort_hook', '$__wbindgen_wrapped_jstag'],
+    $__wbg_handle_catch__deps: ['$__wbg_call_abort_hook', '$__wbindgen_wrapped_jstag'],
     $__wbg_handle_catch: function(e) {{
         if (e instanceof WebAssembly.Exception && e.is(__wbindgen_wrapped_jstag)) {{
             throw e.getArg(__wbindgen_wrapped_jstag, 0);
         }}
-        __wbg_terminated_addr ??= {terminated};
-        {heap}[__wbg_terminated_addr] = 1;
+        {heap}[{terminated}] = 1;
         __wbg_call_abort_hook();
         throw e;
     }},
-    $__wbg_call_guard__deps: ['$__wbg_terminated_addr', '$__wbg_called_abort', '$__wbg_call_abort_hook', '$__wbg_handle_catch'],
+    $__wbg_call_guard__deps: ['$__wbg_called_abort', '$__wbg_call_abort_hook', '$__wbg_handle_catch'],
     $__wbg_call_guard: function() {{
-        __wbg_terminated_addr ??= {terminated};
-        const flag = {heap}[__wbg_terminated_addr];
+        const flag = {heap}[{terminated}];
         if (flag) {{
             if (!__wbg_called_abort) {{
                 __wbg_call_abort_hook();
