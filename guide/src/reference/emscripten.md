@@ -131,8 +131,10 @@ applies:
   later export call throws `Module terminated`. `schedule_reinit()` is a no-op
   on Emscripten since Emscripten owns instantiation.
 
-This needs an engine with the legacy exception-handling instructions, which
-every current browser and Node.js version has.
+This needs an engine with the legacy exception-handling instructions and
+`WebAssembly.JSTag` (Node.js 22+ or a current browser). Unlike
+`wasm32-unknown-unknown`, `JSTag` is not polyfilled on Emscripten, so Node.js
+20 is not supported.
 
 #### Standardized (`exnref`) exception handling
 
@@ -328,6 +330,12 @@ Timers, `tokio::spawn` and the sync primitives work on stock Emscripten
 4. Run under a JSPI-capable engine (Node 25+, or Node 24 with
    `--experimental-wasm-jspi`). `jspi` exports return a `Promise`.
 
+The JSPI configurations here keep `-Cpanic=abort` deliberately: the
+combination of [panic unwinding](#panics) with Emscripten's JSPI lifecycle
+hooks is not yet exercised by wasm-bindgen's test suite, so it is not
+documented as supported. Panics in a `jspi` export trap and terminate the
+instance.
+
 ### How it works
 
 On this target the fibers belong to Emscripten's JSPI runtime, so instead of
@@ -409,7 +417,8 @@ rustflags = [
 ```
 
 `-sREENTRANT_JSPI` (which implies `-sJSPI_HOOKS`) is required: every parked
-activation keeps its own shadow stack.
+activation keeps its own shadow stack. As in the [JSPI
+configuration](#getting-started), `-Cpanic=abort` stays in place.
 
 [emscripten#27698]: https://github.com/emscripten-core/emscripten/pull/27698
 [emscripten#27699]: https://github.com/emscripten-core/emscripten/pull/27699

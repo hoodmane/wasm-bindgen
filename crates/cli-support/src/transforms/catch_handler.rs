@@ -1386,11 +1386,14 @@ mod tests {
         validator.validate_all(&wasm).unwrap();
 
         let text = wasmprinter::print_bytes(&wasm).unwrap();
+        // The wrapper is defined after `$ptr`, so slice from its header up to
+        // the next top-level item (wasmprinter indents those by two spaces,
+        // function bodies by more) to look at the wrapper body only.
         let wrapper = text
             .split("(func $\"my_import catch wrapper\"")
             .nth(1)
             .expect("wrapper function emitted")
-            .split("(func $ptr")
+            .split("\n  (")
             .next()
             .unwrap();
         assert!(

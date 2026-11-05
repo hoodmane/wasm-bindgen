@@ -606,8 +606,13 @@ impl Bindgen {
         // The wrappers only ever handle the JS tag and `catch_all`-rethrow
         // everything else, so they compose with that runtime unchanged. The
         // pass skips itself when the wasm-bindgen runtime's termination flag
-        // isn't present (e.g. foreign EH instructions from embind/libc++
-        // without `panic=unwind`).
+        // isn't present, i.e. when the module has EH instructions but doesn't
+        // link the wasm-bindgen runtime at all. Note that on Emscripten the
+        // runtime exports `__instance_terminated_ptr` regardless of
+        // `panic=unwind`/`abort`, so a `panic=abort` module that still
+        // contains foreign EH instructions (embind/libc++ exceptions, or
+        // `-enable-emscripten-cxx-exceptions=0` omitted) gets the wrappers
+        // too — same as on `wasm32-unknown-unknown`.
         run_exception_handling_transforms(&mut module, eh_version)?;
 
         // We've done a whole bunch of transformations to the Wasm module, many

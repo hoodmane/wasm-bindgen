@@ -164,6 +164,14 @@ pub struct Context<'a> {
     /// If exception handling / unwinding is enabled.
     unwind_enabled: bool,
 
+    /// Whether `WebAssembly.JSTag` is polyfilled with a plain tag, with every
+    /// import wrapped in `wrapError` to rethrow against it. This is what lets
+    /// legacy-EH builds run on engines without `JSTag` (Node 20). Emscripten
+    /// output always uses the native `JSTag`: its toolchain already requires
+    /// newer engines, and the polyfill would force every import off the
+    /// direct-import path.
+    jstag_polyfill: bool,
+
     /// Whether reinit machinery should be emitted. True when `schedule_reinit()`
     /// is used (auto-detected via the `__wbindgen_reinit` intrinsic) or when
     /// `--experimental-reset-state-function` is passed. Controls instance-id
@@ -363,6 +371,8 @@ impl<'a> Context<'a> {
             config,
             threads_enabled: threads_xform::is_enabled(module),
             unwind_enabled: has_local_exception_tags(module),
+            jstag_polyfill: aux.legacy_exception_handling
+                && !matches!(config.mode, OutputMode::Emscripten),
             // Emscripten owns instantiation, so the instance cannot be reset
             // from the bindgen glue; reinit requests are no-ops there.
             generate_reinit: !matches!(config.mode, OutputMode::Emscripten)
@@ -4184,9 +4194,6 @@ if (require('worker_threads').isMainThread) {{
     /// through untouched so the recoverable-vs-abort discrimination in
     /// `__wbg_handle_catch` keeps working.
     fn expose_wrap_error(&mut self) {
-        // On emscripten the polyfilled tag is the `$__wbindgen_jstag_polyfill`
-        // library value (see `generate_jstag_import`); the dep edge keeps it
-        // in the build and declared ahead of this helper.
         self.intrinsic(
             "wrapError".into(),
             "wrapError".into(),
@@ -4201,7 +4208,7 @@ if (require('worker_threads').isMainThread) {{
             }
             "
             .into(),
-            &["__wbindgen_jstag_polyfill"],
+            &[],
         );
     }
 
@@ -4520,21 +4527,16 @@ if (require('worker_threads').isMainThread) {{
             "PanicError".into(),
             {
                 if matches!(self.config.mode, OutputMode::Emscripten) {
-                    // A single class (not a per-throw factory) so that
-                    // `instanceof` works across throws, matching the other
-                    // targets. The `=` prefix makes jsifier emit
-                    // `var PanicError = class ...`.
-                    "addToLibrary({
-                    $PanicError: \"=class PanicError extends Error {}\",
-                    $PanicError__postset: \"Object.defineProperty(PanicError.prototype, 'name', { value: 'PanicError' });\",
-                });\n"
+                    "addToLibrary({\n    \
+                        $PanicError: '=class PanicError extends Error {}',\n    \
+                        $PanicError__postset: \"Object.defineProperty(PanicError.prototype, 'name', { value: 'PanicError' });\",\n\
+                    });\n"
                         .into()
                 } else {
-                    "class PanicError extends Error {}
-                Object.defineProperty(PanicError.prototype, 'name', {
-                    value: 'PanicError',
-                });
-                "
+                    "class PanicError extends Error {}\n\
+                    Object.defineProperty(PanicError.prototype, 'name', {\n    \
+                        value: 'PanicError',\n\
+                    });\n"
                     .into()
                 }
             },
@@ -5119,24 +5121,10 @@ if (require('worker_threads').isMainThread) {{
         };
 
         if matches!(self.config.mode, OutputMode::Emscripten) {
-            if self.aux.legacy_exception_handling {
-                // The polyfilled tag is a library value of its own so that
-                // `wrapError` (which throws against it) can depend on it; the
-                // import is an alias of that value. Keeping it per-module
-                // rather than on `globalThis` lets several emscripten modules
-                // coexist on one page.
-                self.emscripten_library.push_str(
-                    "addToLibrary({\n  \
-                       $__wbindgen_jstag_polyfill: \"new WebAssembly.Tag({ parameters: ['externref'] })\",\n  \
-                       __wbindgen_jstag: \"=__wbindgen_jstag_polyfill\",\n  \
-                       __wbindgen_jstag__deps: ['$__wbindgen_jstag_polyfill'],\n\
-                     });\n",
-                );
-            } else {
-                self.emscripten_library
-                    .push_str("addToLibrary({\n  __wbindgen_jstag: \"WebAssembly.JSTag\",\n});\n");
-            }
-        } else if self.aux.legacy_exception_handling {
+            // Native `JSTag` in both dialects; see `jstag_polyfill`.
+            self.emscripten_library
+                .push_str("addToLibrary({\n  __wbindgen_jstag: \"WebAssembly.JSTag\",\n});\n");
+        } else if self.jstag_polyfill {
             self.global(
                 "const __wbindgen_jstag_polyfill = new WebAssembly.Tag({ parameters: ['externref'] });",
             );
@@ -5488,8 +5476,7 @@ if (require('worker_threads').isMainThread) {{
         // (a clone of an empty set).
         let adapter_deps_before = self.adapter_deps.clone();
         let catch = self.aux.imports_with_catch.contains(&id);
-        let needs_jstag_wrap =
-            self.aux.legacy_exception_handling && matches!(kind, ContextAdapterKind::Import(_));
+        let needs_jstag_wrap = self.jstag_polyfill && matches!(kind, ContextAdapterKind::Import(_));
         // Compute before builder borrows self mutably.
         let is_suspending = matches!(kind, ContextAdapterKind::Import(_))
             && self.aux.imports_with_suspending.contains(&id);
@@ -5826,7 +5813,7 @@ if (require('worker_threads').isMainThread) {{
                 // JSTag polyfill: when running on Node 20, wrap each import in a JS try/catch that re-throws via a
                 // `new WebAssembly.Exception(__wbindgen_jstag, [e])` against
                 // the polyfilled tag
-                let code = if self.aux.legacy_exception_handling {
+                let code = if self.jstag_polyfill {
                     self.expose_wrap_error();
                     format!("() {{ return wrapError(function {code}, arguments); }}")
                 } else {

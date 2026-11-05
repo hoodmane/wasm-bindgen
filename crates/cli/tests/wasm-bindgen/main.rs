@@ -3941,8 +3941,9 @@ fn emscripten_end_to_end_unwind() {
 /// switches emcc's system libraries, and `-Cllvm-args=-wasm-use-legacy-eh=0`
 /// plus a `-Zbuild-std` rebuild of `std` (the prebuilt one is legacy) do the
 /// same for the Rust side. The CLI then emits its wrappers as `try_table`.
-/// Needs a nightly with `rust-src` and a node with exnref support; skipped
-/// otherwise.
+/// Skipped when there is no nightly with `rust-src`. The `node` on `PATH`
+/// must support `exnref` (Node 22.22.3+ / 24.15.0+); that isn't probed, so
+/// an older node fails the run step rather than skipping.
 #[test]
 fn emscripten_end_to_end_unwind_exnref() {
     emscripten_unwind_end_to_end("emscripten_end_to_end_unwind_exnref", EhDialect::Exnref);
