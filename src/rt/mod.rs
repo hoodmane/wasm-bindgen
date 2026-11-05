@@ -928,36 +928,6 @@ static GLOBAL_EXNDATA: ThreadLocalWrapper<Cell<[u32; 2]>> = ThreadLocalWrapper(C
 #[no_mangle]
 pub static mut __instance_terminated: u32 = 0;
 
-/// Address of [`__instance_terminated`].
-///
-/// On Emscripten targets rustc demotes every `#[no_mangle]` static to the
-/// `Rust` export level (`rustc_codegen_ssa::back::symbol_export::
-/// symbol_export_level`, "WebAssembly cannot export data symbols"), so
-/// `__instance_terminated` and `__abort_handler` are left out of the
-/// `EXPORTED_FUNCTIONS` list it hands `emcc` and never reach the Wasm export
-/// section, unlike on `wasm32-unknown-unknown` where wasm-ld exports them as
-/// address-holding globals. A `-Wl,--export=` link arg would work but can't
-/// be supplied from a library crate (Cargo only applies `rustc-link-arg` to
-/// the emitting package's own targets), so the runtime exports these
-/// accessors instead. Their bodies are just the address, which the CLI folds
-/// to a constant at build time and then drops the exports (see
-/// `static_addr` in `cli-support/src/transforms/catch_handler.rs`), so they
-/// cost nothing at runtime. Deliberately not
-/// `__wbindgen`-prefixed: the CLI unexports every `__wbindgen*` symbol once
-/// descriptor processing is done, and these must stay reachable from JS.
-#[cfg(target_os = "emscripten")]
-#[no_mangle]
-pub extern "C" fn __instance_terminated_ptr() -> *mut u32 {
-    core::ptr::addr_of_mut!(__instance_terminated)
-}
-
-/// Address of [`__abort_handler`]; see [`__instance_terminated_ptr`].
-#[cfg(target_os = "emscripten")]
-#[no_mangle]
-pub extern "C" fn __abort_handler_ptr() -> *mut fn() {
-    core::ptr::addr_of_mut!(__abort_handler)
-}
-
 /// Set in-fiber at every resume by the CLI-generated wrapper around a
 /// `#[wasm_bindgen(catch, suspending)]` import (see
 /// `cli-support/src/transforms/jspi.rs`), through
@@ -1003,6 +973,9 @@ pub static mut __abort_handler: fn() = NO_OP_PTR;
 /// builds. On `panic=abort` builds the abort machinery is only emitted when
 /// `wasm-bindgen` is run with `--force-enable-abort-handler`; without that flag
 /// the handler is registered but never fires.
+///
+/// On Emscripten the handler never fires: termination is Emscripten's own
+/// `abort()`, so use its `Module.onAbort` callback instead.
 pub fn set_on_abort(f: fn()) -> Option<fn()> {
     let prev = unsafe { __abort_handler };
     unsafe {

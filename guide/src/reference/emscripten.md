@@ -117,9 +117,8 @@ toolchain or `-Zbuild-std` is needed. rustc links with `-fwasm-exceptions`:
 panics are thrown as native Wasm exceptions (as C++ exceptions, through
 Emscripten's libunwind) in the legacy `try`/`catch` instruction dialect that
 Emscripten emits by default. `wasm-bindgen` detects that dialect and emits its
-own exception-handling code in the same form, so everything described in
-[Catching panics](catch-unwind.md) and [Handling aborts](handling-aborts.md)
-applies:
+own exception-handling code in the same form, so what
+[Catching panics](catch-unwind.md) describes applies:
 
 - A panic that reaches a `#[wasm_bindgen]` export or closure is caught and
   rethrown to JavaScript as a `PanicError`; the instance stays usable and the
@@ -127,9 +126,15 @@ applies:
 - `#[wasm_bindgen(catch)]` imports hand JavaScript exceptions to Rust as
   `Err`, and exceptions from other imports propagate through Rust frames
   (running destructors) unchanged.
-- A trap terminates the instance: `set_on_abort` callbacks fire and every
-  later export call throws `Module terminated`. `schedule_reinit()` is a no-op
-  on Emscripten since Emscripten owns instantiation.
+
+Fatal errors, on the other hand, are Emscripten's business rather than
+`wasm-bindgen`'s: a trap (or any other non-recoverable exception) escaping an
+export is passed to Emscripten's `abort()`, which calls `Module.onAbort`, sets
+`ABORT` and re-traps so the error reaches the caller as a `RuntimeError`.
+None of the machinery in [Handling aborts](handling-aborts.md) is generated
+for Emscripten output: `set_on_abort` callbacks never fire (use
+`Module.onAbort`), later export calls are not refused, and
+`schedule_reinit()` is a no-op since Emscripten owns instantiation.
 
 This needs an engine with the legacy exception-handling instructions and
 `WebAssembly.JSTag` (Node.js 22+ or a current browser). Unlike

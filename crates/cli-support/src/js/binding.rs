@@ -246,12 +246,24 @@ pub enum ExportGuard {
     Abort,
     /// Wrap with just termination guard for schedule_reinit() support.
     GuardOnly,
+    /// Wrap with just the try-catch: Emscripten, where `__wbg_handle_catch`
+    /// hands non-recoverable exceptions to Emscripten's `abort()` and there is
+    /// no wasm-bindgen termination state to guard on.
+    CatchOnly,
 }
 
 fn wrap_try_catch(call: &str) -> String {
     format!(
         "\
         __wbg_call_guard();
+        {}",
+        wrap_catch_only(call)
+    )
+}
+
+fn wrap_catch_only(call: &str) -> String {
+    format!(
+        "\
         try {{
             {call};
         }} catch(e) {{
@@ -274,6 +286,7 @@ pub fn maybe_wrap_export_call(call: &str, guard: ExportGuard) -> String {
     match guard {
         ExportGuard::Abort => wrap_try_catch(call),
         ExportGuard::GuardOnly => wrap_call_guard(call),
+        ExportGuard::CatchOnly => wrap_catch_only(call),
         ExportGuard::None => format!("{call};"),
     }
 }
@@ -1763,10 +1776,8 @@ fn instruction(
                 instr,
                 Instruction::CallExport(_) | Instruction::DeferFree { .. }
             );
-            let mut guard = if js.cx.aux.wrapped_js_tag.is_some() && is_export_call {
-                ExportGuard::Abort
-            } else if js.cx.generate_reinit && is_export_call {
-                ExportGuard::GuardOnly
+            let mut guard = if is_export_call {
+                js.cx.export_guard()
             } else {
                 ExportGuard::None
             };

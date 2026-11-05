@@ -128,13 +128,6 @@ pub struct WasmBindgenAux {
     /// When building with legacy exception handling
     pub legacy_exception_handling: bool,
 
-    /// Linear-memory addresses of the runtime's `__instance_terminated` flag
-    /// and `__abort_handler` slot, resolved by the catch-handler transform
-    /// (from the exported globals, or folded from the Emscripten accessor
-    /// functions, which are then unexported).
-    pub instance_terminated_addr: Option<i32>,
-    pub abort_handler_addr: Option<i32>,
-
     /// Whether the `__wbindgen_reinit` intrinsic is used. When true, the
     /// reinit machinery (`__wbg_reset_state` as a private function + the
     /// reinit flag check in `__wbg_termination_guard`) is emitted regardless

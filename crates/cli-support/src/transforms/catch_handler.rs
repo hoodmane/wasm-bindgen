@@ -51,8 +51,10 @@ struct CatchContext {
     exn_store: Option<FunctionId>,
     idx_local: LocalId,
     exn_local: LocalId,
-    /// Address in linear memory of the `__instance_terminated` flag (u32).
-    terminated_addr: i32,
+    /// Address in linear memory of the `__instance_terminated` flag (u32),
+    /// or `None` on Emscripten, where termination is Emscripten's `abort()`
+    /// and no in-wasm guard is emitted.
+    terminated_addr: Option<i32>,
     memory: MemoryId,
 }
 
@@ -62,11 +64,17 @@ struct CatchContext {
 /// functions that catch JavaScript exceptions using the appropriate EH mechanism.
 ///
 /// Sets `aux.js_tag` when wrappers are generated.
+///
+/// `emscripten` selects Emscripten's termination model: a trap escaping an
+/// export goes to Emscripten's `abort()` from the JS side, so the wrappers
+/// carry no `__instance_terminated` guard (the runtime has no exported flag
+/// there either).
 pub fn run(
     module: &mut Module,
     aux: &mut WasmBindgenAux,
     wit: &NonstandardWitSection,
     eh_version: ExceptionHandlingVersion,
+    emscripten: bool,
 ) -> Result<(), Error> {
     // These intrinsics are required when there are catch imports
     let externref_table = aux.externref_table;
@@ -91,17 +99,18 @@ pub fn run(
         }
     }
 
-    let terminated_addr = match static_addr(module, "__instance_terminated")? {
-        Some(addr) => addr,
-        // The termination flag comes from the wasm-bindgen runtime. If it's
-        // missing (e.g. a module with C++ exception handling instructions
-        // from embind/libcxx but no wasm-bindgen runtime), skip catch
-        // wrapper generation.
-        None => return Ok(()),
+    let terminated_addr = if emscripten {
+        None
+    } else {
+        match get_terminated_addr(module) {
+            Some(addr) => Some(addr),
+            // The termination flag comes from the wasm-bindgen runtime. If
+            // it's missing (e.g. a module with C++ exception handling
+            // instructions from embind/libcxx but no wasm-bindgen runtime),
+            // skip catch wrapper generation.
+            None => return Ok(()),
+        }
     };
-    aux.instance_terminated_addr = Some(terminated_addr);
-    aux.abort_handler_addr = static_addr(module, "__abort_handler")?;
-    remove_static_accessors(module);
     let memory = crate::wasm_conventions::get_memory(module)?;
 
     // Ensure the function table is populated in aux so that the JS codegen
@@ -202,91 +211,20 @@ pub(crate) fn get_or_import_js_tag(module: &mut Module) -> TagId {
     import_js_tag(module)
 }
 
-/// Linear-memory address of one of the runtime's `#[no_mangle]` statics
-/// (`__instance_terminated`, `__abort_handler`).
-///
-/// wasm-ld exports a data symbol as an immutable global whose initializer is
-/// its address, which is what `wasm32-unknown-unknown` builds carry. On
-/// Emscripten rustc never exports statics, so the runtime exports a
-/// `<name>_ptr() -> *mut _` accessor there instead, whose body is just the
-/// address; it's folded here so both targets end up with the same constant.
-/// `Ok(None)` if the module has neither; `Err` if the accessor's body isn't a
-/// constant (a relocatable / dynamically linked module, which isn't
-/// supported).
-pub(crate) fn static_addr(module: &Module, name: &str) -> Result<Option<i32>, Error> {
-    let accessor = format!("{name}_ptr");
-    for export in module.exports.iter() {
-        match export.item {
-            walrus::ExportItem::Global(g) if export.name == name => {
-                if let walrus::GlobalKind::Local(walrus::ConstExpr::Value(
-                    walrus::ir::Value::I32(v),
-                )) = &module.globals.get(g).kind
-                {
-                    return Ok(Some(*v));
-                }
-            }
-            walrus::ExportItem::Function(f) if export.name == accessor => {
-                return const_fn_value(module, f).map(Some).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "`{accessor}` does not return a constant address; wasm-bindgen \
-                         needs a statically linked module (`-Crelocation-model=static`)"
-                    )
-                });
-            }
-            _ => {}
-        }
-    }
-    Ok(None)
-}
-
-/// The value of a nullary function whose body is a single `i32.const`, or a
-/// `global.get` of an immutable `i32` global with a constant initializer.
-fn const_fn_value(module: &Module, f: FunctionId) -> Option<i32> {
-    let walrus::FunctionKind::Local(local) = &module.funcs.get(f).kind else {
-        return None;
-    };
-    let instrs = &local.block(local.entry_block()).instrs;
-    let instrs: Vec<&Instr> = instrs
-        .iter()
-        .map(|(i, _)| i)
-        .filter(|i| !matches!(i, Instr::Return(_)))
-        .collect();
-    let [instr] = instrs[..] else {
-        return None;
-    };
-    match instr {
-        Instr::Const(Const {
-            value: Value::I32(v),
-        }) => Some(*v),
-        Instr::GlobalGet(GlobalGet { global }) => {
-            let global = module.globals.get(*global);
-            match (&global.kind, global.mutable) {
-                (walrus::GlobalKind::Local(walrus::ConstExpr::Value(Value::I32(v))), false) => {
-                    Some(*v)
-                }
-                _ => None,
-            }
-        }
-        _ => None,
-    }
-}
-
-/// Drop the Emscripten accessor exports once their addresses are folded, so
-/// the functions are GC'd and don't show up as wasm exports / JS bindings.
-fn remove_static_accessors(module: &mut Module) {
-    let ids: Vec<_> = module
+/// Look up the `__instance_terminated` exported global and return its i32
+/// constant value (the address of the termination flag in linear memory).
+fn get_terminated_addr(module: &Module) -> Option<i32> {
+    let global_id = module
         .exports
         .iter()
-        .filter(|e| {
-            matches!(
-                e.name.as_str(),
-                "__instance_terminated_ptr" | "__abort_handler_ptr"
-            )
-        })
-        .map(|e| e.id())
-        .collect();
-    for id in ids {
-        module.exports.delete(id);
+        .find(|e| e.name == "__instance_terminated")
+        .and_then(|e| match e.item {
+            walrus::ExportItem::Global(g) => Some(g),
+            _ => None,
+        })?;
+    match &module.globals.get(global_id).kind {
+        walrus::GlobalKind::Local(walrus::ConstExpr::Value(walrus::ir::Value::I32(v))) => Some(*v),
+        _ => None,
     }
 }
 
@@ -299,7 +237,7 @@ fn generate_catch_wrapper(
     externref_table: Option<TableId>,
     table_alloc: Option<FunctionId>,
     exn_store: Option<FunctionId>,
-    terminated_addr: i32,
+    terminated_addr: Option<i32>,
     memory: MemoryId,
     eh_version: ExceptionHandlingVersion,
 ) -> FunctionId {
@@ -600,13 +538,20 @@ fn emit_catch_handler(
 ///
 /// This checks if `__instance_terminated` is nonzero and traps if so, ensuring
 /// that instance termination is never swallowed by an outer catch handler.
+///
+/// Emits nothing on Emscripten (`terminated_addr == None`): termination is
+/// Emscripten's `abort()`, whose `RuntimeError` may be seen by outer wasm
+/// frames as a foreign exception, the same as for Emscripten's C++.
 fn emit_termination_guard(builder: &mut walrus::InstrSeqBuilder, ctx: CatchContext) {
+    let Some(terminated_addr) = ctx.terminated_addr else {
+        return;
+    };
     let mem_arg: MemArg = MemArg {
         align: 4,
         offset: 0,
     };
     builder
-        .i32_const(ctx.terminated_addr)
+        .i32_const(terminated_addr)
         .load(ctx.memory, LoadKind::I32 { atomic: false }, mem_arg)
         .if_else(
             None,
@@ -834,7 +779,7 @@ mod tests {
             Some(table),
             Some(table_alloc),
             Some(exn_store),
-            TERMINATED_ADDR,
+            Some(TERMINATED_ADDR),
             memory,
             super::super::ExceptionHandlingVersion::Modern,
         );
@@ -936,7 +881,7 @@ mod tests {
             Some(table),
             Some(table_alloc),
             Some(exn_store),
-            TERMINATED_ADDR,
+            Some(TERMINATED_ADDR),
             memory,
             super::super::ExceptionHandlingVersion::Legacy,
         );
@@ -1055,7 +1000,7 @@ mod tests {
         assert_eq!(eh_version, super::super::ExceptionHandlingVersion::Legacy);
 
         // Run the transform
-        run(&mut module, &mut aux, &wit, eh_version).unwrap();
+        run(&mut module, &mut aux, &wit, eh_version, false).unwrap();
 
         // JSTag should be set in aux
         assert!(aux.js_tag.is_some());
@@ -1137,7 +1082,7 @@ mod tests {
             Some(table),
             Some(table_alloc),
             Some(exn_store),
-            TERMINATED_ADDR,
+            Some(TERMINATED_ADDR),
             memory,
             super::super::ExceptionHandlingVersion::Legacy,
         );
@@ -1234,7 +1179,7 @@ mod tests {
             Some(table),
             Some(table_alloc),
             Some(exn_store),
-            TERMINATED_ADDR,
+            Some(TERMINATED_ADDR),
             memory,
             super::super::ExceptionHandlingVersion::Modern,
         );
@@ -1332,7 +1277,7 @@ mod tests {
             Some(table),
             Some(table_alloc),
             Some(exn_store),
-            TERMINATED_ADDR,
+            Some(TERMINATED_ADDR),
             memory,
             eh_version,
         );
@@ -1366,62 +1311,72 @@ mod tests {
     }
 
     #[test]
-    fn test_static_addr_from_global() {
+    fn test_get_terminated_addr() {
         let module = parse_wat(&format!("(module {TERMINATED_WAT})"));
-        assert_eq!(
-            static_addr(&module, "__instance_terminated").unwrap(),
-            Some(TERMINATED_ADDR)
-        );
-        assert_eq!(static_addr(&module, "__abort_handler").unwrap(), None);
-    }
-
-    #[test]
-    fn test_static_addr_missing() {
+        assert_eq!(get_terminated_addr(&module), Some(TERMINATED_ADDR));
         let module = parse_wat("(module (memory 1))");
-        assert_eq!(static_addr(&module, "__instance_terminated").unwrap(), None);
+        assert_eq!(get_terminated_addr(&module), None);
     }
 
-    /// Emscripten modules don't export the statics as globals; the runtime
-    /// exports `<name>_ptr` accessors whose bodies are folded to the same
-    /// constant and then dropped from the export list.
+    /// Emscripten wrappers carry no termination guard: no load of the flag,
+    /// no `unreachable`.
     #[test]
-    fn test_static_addr_from_accessor_function() {
+    fn test_emscripten_wrapper_has_no_termination_guard() {
         let wat = r#"
             (module
+                (import "env" "my_import" (func $my_import (param i32) (result i32)))
                 (memory 1)
-                (global $base i32 (i32.const 2048))
-                (func $term_ptr (result i32) i32.const 1048576)
-                (func $abort_ptr (result i32) global.get $base return)
-                (export "__instance_terminated_ptr" (func $term_ptr))
-                (export "__abort_handler_ptr" (func $abort_ptr))
+                (export "my_import" (func $my_import))
             )
         "#;
         let mut module = parse_wat(wat);
-        assert_eq!(
-            static_addr(&module, "__instance_terminated").unwrap(),
-            Some(1048576)
+        let import_func = module
+            .exports
+            .iter()
+            .find(|e| e.name == "my_import")
+            .and_then(|e| match e.item {
+                walrus::ExportItem::Function(f) => Some(f),
+                _ => None,
+            })
+            .unwrap();
+        let js_tag = import_js_tag(&mut module);
+        let wrapped = import_externref_tag(&mut module, "__wbindgen_wrapped_jstag");
+        let memory = get_test_memory(&module);
+
+        generate_catch_wrapper(
+            &mut module,
+            import_func,
+            js_tag,
+            WrapperKind::NonAbortingWrapper {
+                wrapped_js_tag: wrapped,
+            },
+            None,
+            None,
+            None,
+            None,
+            memory,
+            super::super::ExceptionHandlingVersion::Legacy,
         );
-        assert_eq!(static_addr(&module, "__abort_handler").unwrap(), Some(2048));
 
-        remove_static_accessors(&mut module);
-        assert_eq!(module.exports.iter().count(), 0);
-    }
+        let wasm = module.emit_wasm();
+        let mut validator = wasmparser::Validator::new_with_features(
+            wasmparser::WasmFeatures::default()
+                | wasmparser::WasmFeatures::EXCEPTIONS
+                | wasmparser::WasmFeatures::LEGACY_EXCEPTIONS,
+        );
+        validator.validate_all(&wasm).unwrap();
 
-    /// A non-constant accessor (PIC / dynamic linking) is an error rather
-    /// than a silently disabled termination guard.
-    #[test]
-    fn test_static_addr_non_constant_accessor_is_error() {
-        let wat = r#"
-            (module
-                (memory 1)
-                (global $memory_base (mut i32) (i32.const 0))
-                (func $ptr (result i32) global.get $memory_base i32.const 16 i32.add)
-                (export "__instance_terminated_ptr" (func $ptr))
-            )
-        "#;
-        let module = parse_wat(wat);
-        let err = static_addr(&module, "__instance_terminated").unwrap_err();
-        assert!(err.to_string().contains("relocation-model=static"), "{err}");
+        let text = wasmprinter::print_bytes(&wasm).unwrap();
+        assert!(!text.contains("i32.load"), "no flag load:\n{text}");
+        assert!(!text.contains("unreachable"), "no guard trap:\n{text}");
+        assert!(
+            text.contains("throw 1"),
+            "JS exceptions still rewrapped:\n{text}"
+        );
+        assert!(
+            text.contains("rethrow 0"),
+            "other exceptions still rethrown:\n{text}"
+        );
     }
 
     #[test]

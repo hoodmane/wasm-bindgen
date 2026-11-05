@@ -3924,13 +3924,14 @@ fn emscripten_end_to_end() {
 /// that target's default strategy (no `-Zbuild-std` needed). rustc links with
 /// `-fwasm-exceptions`, so panics are C++ exceptions in the legacy
 /// `try`/`catch` dialect; the CLI's catch wrappers and shadow-stack restore
-/// pass run on top of that and the emscripten library carries the
-/// termination guard. Exercises the same observable contract as the
+/// pass run on top of that. Exercises the same observable contract as the
 /// wasm32-unknown-unknown unwind tests: a panicking export throws a
 /// `PanicError` and the instance stays usable, `catch` imports work, a JS
 /// exception from a non-`catch` import propagates unchanged through Rust
-/// frames, the shadow stack doesn't drift across escaping panics, and a trap
-/// terminates the instance (firing `set_on_abort`, blocking later calls).
+/// frames, and the shadow stack doesn't drift across escaping panics. A trap
+/// goes to Emscripten's own `abort()` (`Module.onAbort`, `ABORT`,
+/// `RuntimeError: Aborted(...)`) rather than wasm-bindgen's termination
+/// machinery.
 #[test]
 fn emscripten_end_to_end_unwind() {
     emscripten_unwind_end_to_end("emscripten_end_to_end_unwind", EhDialect::Legacy);
@@ -4037,8 +4038,6 @@ fn emscripten_unwind_end_to_end(name: &str, dialect: EhDialect) {
                 fn js_throws() -> Result<(), JsValue>;
                 #[wasm_bindgen(js_name = "jsThrowsNoCatch")]
                 fn js_throws_no_catch();
-                #[wasm_bindgen(js_name = "abortHook")]
-                fn abort_hook();
             }
 
             #[wasm_bindgen]
@@ -4078,11 +4077,6 @@ fn emscripten_unwind_end_to_end(name: &str, dialect: EhDialect) {
             #[wasm_bindgen]
             pub fn trap() {
                 std::arch::wasm32::unreachable()
-            }
-
-            #[wasm_bindgen]
-            pub fn install_abort_hook() {
-                wasm_bindgen::handler::set_on_abort(|| abort_hook());
             }
 
             #[wasm_bindgen]
@@ -4159,11 +4153,10 @@ fn emscripten_unwind_end_to_end(name: &str, dialect: EhDialect) {
 
         globalThis.jsThrows = () => {{ throw new Error('from js'); }};
         globalThis.jsThrowsNoCatch = () => {{ throw new TypeError('no catch'); }};
-        let hookCalls = 0;
-        globalThis.abortHook = () => {{ hookCalls++; }};
+        let aborts = [];
 
         // Silence the panic message the Rust default hook prints.
-        const m = await Module({{ printErr() {{}} }});
+        const m = await Module({{ printErr() {{}}, onAbort(what) {{ aborts.push(what); }} }});
 
         assert(m.maybe_panic(1) === 2, 'plain call');
 
@@ -4197,19 +4190,16 @@ fn emscripten_unwind_end_to_end(name: &str, dialect: EhDialect) {
         const c = new m.Counter(41);
         assert(c.incr() === 42, 'Counter.incr');
 
-        // A trap terminates the instance: the abort hook fires once and
-        // every later call is refused.
-        m.install_abort_hook();
+        // A trap is handed to Emscripten's abort(): Module.onAbort sees the
+        // original RuntimeError, and abort() then re-traps through the
+        // module's `__trap` export (a real trap, which no wasm `catch_all`
+        // on the way out can swallow) so the caller gets a RuntimeError.
+        assert(aborts.length === 0, 'no abort so far');
         let trap;
         try {{ m.trap(); }} catch (e) {{ trap = e; }}
-        assert(trap instanceof WebAssembly.RuntimeError, 'trap surfaces as RuntimeError');
-        assert(hookCalls === 1, `abort hook calls ${{hookCalls}}`);
-        for (const f of [() => m.maybe_panic(1), () => c.incr(), () => m.call_catch()]) {{
-            let blocked;
-            try {{ f(); }} catch (e) {{ blocked = e; }}
-            assert(blocked && blocked.message === 'Module terminated', 'calls refused after termination');
-        }}
-        assert(hookCalls === 1, 'abort hook fires once');
+        assert(trap instanceof WebAssembly.RuntimeError, `abort surfaces as RuntimeError, got ${{trap}}`);
+        assert(aborts.length === 1, `onAbort calls ${{aborts.length}}`);
+        assert(aborts[0] instanceof WebAssembly.RuntimeError && /unreachable/.test(aborts[0].message), `onAbort gets the trap, got ${{aborts[0]}}`);
 
         console.log('ok');
         "#

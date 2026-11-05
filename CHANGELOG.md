@@ -25,10 +25,11 @@
   supported across the `wasm-bindgen` boundary on Emscripten, with both its
   default legacy exception-handling dialect and the standardized `exnref` one
   (`-sWASM_LEGACY_EXCEPTIONS=0`): panics reaching an export or closure are
-  thrown to JavaScript as `PanicError` with the shadow stack restored,
-  `#[wasm_bindgen(catch)]` imports work, and traps terminate the instance,
-  firing `set_on_abort` and refusing later calls. `-Cpanic=abort` is no longer
-  required in the Emscripten build configuration.
+  thrown to JavaScript as `PanicError` with the shadow stack restored and
+  `#[wasm_bindgen(catch)]` imports work. Fatal errors escaping an export go to
+  Emscripten's own `abort()` (`Module.onAbort`) rather than `wasm-bindgen`'s
+  termination machinery. `-Cpanic=abort` is no longer required in the
+  Emscripten build configuration.
   [#5165](https://github.com/wasm-bindgen/wasm-bindgen/issues/5165)
 
 ### Changed
