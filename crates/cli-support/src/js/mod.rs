@@ -5218,17 +5218,18 @@ if (require('worker_threads').isMainThread) {{
     }
 
     /// How calls into wasm exports are wrapped against instance termination.
+    ///
+    /// With exception tagging (`wrapped_js_tag`) exports need the catch
+    /// handler; the call guard additionally refuses calls into a terminated
+    /// instance and runs scheduled reinits. Emscripten gets only the catch:
+    /// termination there is Emscripten's `abort()`, so there is no
+    /// wasm-bindgen state to guard on and reinit is never generated.
     pub(crate) fn export_guard(&self) -> binding::ExportGuard {
-        if self.aux.wrapped_js_tag.is_some() {
-            if matches!(self.config.mode, OutputMode::Emscripten) {
-                binding::ExportGuard::CatchOnly
-            } else {
-                binding::ExportGuard::Abort
-            }
-        } else if self.generate_reinit {
-            binding::ExportGuard::GuardOnly
-        } else {
-            binding::ExportGuard::None
+        let emscripten = matches!(self.config.mode, OutputMode::Emscripten);
+        let catch = self.aux.wrapped_js_tag.is_some();
+        binding::ExportGuard {
+            call_guard: (catch && !emscripten) || self.generate_reinit,
+            catch,
         }
     }
 
